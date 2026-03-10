@@ -1,0 +1,75 @@
+# Environment files
+.env
+*.env
+.env.local
+.env.production
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Cookies and auth tokens
+cookies.txt
+*.cookies
+token*.json
+*token*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Node.js
+node_modules/
+.next/
+out/
+.cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Temp files
+tmp/
+temp/
+*.tmp
+
+# Unrelated projects (only multiplier project files should be tracked)
+FuzzyAI/
+Instagram-YouTube-Automation/
+summit-copilot/
+youtube_upload_crew/
+AI-Adoption-Deck-PhysicsWallah.md
+GO-LIVE-CHECKLIST.md
+Global-Knowledge-Base.md
+INDEX.md
+.mcp.json
+.claude/
+*.json
+!multiplier-api/requirements.txt
+!multiplier-ui/package.json
+!multiplier-ui/package-lock.json
+!multiplier-ui/tsconfig.json
+!multiplier-ui/tailwind.config.ts
+!multiplier-ui/next.config.ts
+!multiplier-ui/postcss.config.mjs
+!multiplier-ui/eslint.config.mjs
