@@ -19,8 +19,5 @@ COPY youtube_upload.py .
 COPY yt_client.py .
 COPY scheduler.py .
 
-# Expose port
-EXPOSE $PORT
-
 # Start command
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
