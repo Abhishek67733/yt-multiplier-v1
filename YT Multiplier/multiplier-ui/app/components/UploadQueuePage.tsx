@@ -80,7 +80,7 @@ function SliderTrack({ value, min, max, onChange, labels }: {
 }
 
 export default function UploadQueuePage() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const userEmail = session?.user?.email || "";
   const { success, error } = useToast();
   const [queued, setQueued] = useState<Short[]>([]);
@@ -108,10 +108,12 @@ export default function UploadQueuePage() {
   }, [userEmail]);
 
   useEffect(() => {
-    fetchAll();
-    const interval = setInterval(fetchAll, 30_000);
-    return () => clearInterval(interval);
-  }, [fetchAll]);
+    if (status === "authenticated" && userEmail) {
+      fetchAll();
+      const interval = setInterval(fetchAll, 30_000);
+      return () => clearInterval(interval);
+    }
+  }, [fetchAll, status, userEmail]);
 
   const handleLaunch = async () => {
     if (!selected) return;

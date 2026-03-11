@@ -57,7 +57,7 @@ function EmptyState({ onConnect }: { onConnect: () => void }) {
 }
 
 export default function TargetChannelsPage() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const userEmail = session?.user?.email || "";
   const { success, error } = useToast();
   const [channels, setChannels] = useState<TargetChannel[]>([]);
@@ -75,7 +75,7 @@ export default function TargetChannelsPage() {
     }
   }, [userEmail]);
 
-  useEffect(() => { fetchChannels(); }, [fetchChannels]);
+  useEffect(() => { if (status === "authenticated" && userEmail) fetchChannels(); }, [fetchChannels, status, userEmail]);
 
   // Check URL params for OAuth callback result
   useEffect(() => {

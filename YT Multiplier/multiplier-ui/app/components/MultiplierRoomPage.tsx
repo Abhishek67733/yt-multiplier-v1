@@ -505,7 +505,7 @@ interface MultipliedVideo {
 }
 
 function MultipliedVideosTab() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const userEmail = session?.user?.email || "";
   const { success, error } = useToast();
   const [videos, setVideos] = useState<MultipliedVideo[]>([]);
@@ -525,7 +525,7 @@ function MultipliedVideosTab() {
     finally { setLoading(false); }
   }, [userEmail]);
 
-  useEffect(() => { fetchVideos(); }, [fetchVideos]);
+  useEffect(() => { if (status === "authenticated" && userEmail) fetchVideos(); }, [fetchVideos, status, userEmail]);
 
   const handleBoost = async () => {
     if (!modalVideo) return;
@@ -890,7 +890,7 @@ function fmtTime(d: string | null) {
 }
 
 function UploadLogTab() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const userEmail = session?.user?.email || "";
   const [logs, setLogs] = useState<WebhookLog[]>([]);
   const [summary, setSummary] = useState<LogSummary | null>(null);
@@ -909,7 +909,7 @@ function UploadLogTab() {
     finally { setLoading(false); }
   }, [userEmail]);
 
-  useEffect(() => { fetchLogs(); }, [fetchLogs]);
+  useEffect(() => { if (status === "authenticated" && userEmail) fetchLogs(); }, [fetchLogs, status, userEmail]);
 
   // Group logs by video_id for nice display
   const grouped = logs.reduce<Record<string, WebhookLog[]>>((acc, log) => {
@@ -1101,7 +1101,7 @@ function UploadLogTab() {
 // ── Main Component ───────────────────────────────────────────────────────────
 
 export default function MultiplierRoomPage() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const userEmail = session?.user?.email || "";
   const { success, error } = useToast();
   const [subTab, setSubTab] = useState<"shorts" | "multiplied" | "logs">("shorts");
@@ -1138,7 +1138,7 @@ export default function MultiplierRoomPage() {
     finally { setLoading(false); }
   }, [userEmail]);
 
-  useEffect(() => { fetchAll(); }, [fetchAll]);
+  useEffect(() => { if (status === "authenticated" && userEmail) fetchAll(); }, [fetchAll, status, userEmail]);
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {

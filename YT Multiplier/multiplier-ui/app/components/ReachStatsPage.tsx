@@ -67,7 +67,7 @@ function SummaryCard({ label, value, sub, accent }: {
 }
 
 export default function ReachStatsPage() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const userEmail = session?.user?.email || "";
   const { success, error } = useToast();
   const [stats, setStats] = useState<StatEntry[]>([]);
@@ -87,10 +87,12 @@ export default function ReachStatsPage() {
   }, [userEmail]);
 
   useEffect(() => {
-    fetchStats();
-    const interval = setInterval(fetchStats, 30 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [fetchStats]);
+    if (status === "authenticated" && userEmail) {
+      fetchStats();
+      const interval = setInterval(fetchStats, 30 * 60 * 1000);
+      return () => clearInterval(interval);
+    }
+  }, [fetchStats, status, userEmail]);
 
   const handleRefresh = async () => {
     setRefreshing(true);

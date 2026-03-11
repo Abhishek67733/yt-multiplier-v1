@@ -433,7 +433,7 @@ function ChannelRow({ ch, shorts, onRemove }: { ch: Channel; shorts: Short[]; on
 }
 
 export default function SourceChannelsPage() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const userEmail = session?.user?.email || "";
   const { success, error } = useToast();
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -470,11 +470,13 @@ export default function SourceChannelsPage() {
   }, [fetchAll, userEmail]);
 
   useEffect(() => {
-    fetchAll().then(() => {
-      // Auto-enrich on first load to pull thumbnails + names
-      handleEnrich();
-    });
-  }, [fetchAll, handleEnrich]);
+    if (status === "authenticated" && userEmail) {
+      fetchAll().then(() => {
+        // Auto-enrich on first load to pull thumbnails + names
+        handleEnrich();
+      });
+    }
+  }, [fetchAll, handleEnrich, status, userEmail]);
 
   const handleAdd = async () => {
     if (!newUrl.trim()) return;
