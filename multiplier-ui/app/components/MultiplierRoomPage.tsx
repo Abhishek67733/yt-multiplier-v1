@@ -4,7 +4,7 @@ import {
   Flame, Eye, ThumbsUp, Sparkles, Rocket, Clock, ChevronDown,
   ChevronRight, Play, Loader2, CheckSquare, Square, Wand2,
   Upload, AlertCircle, ExternalLink, Calendar, RefreshCw,
-  Zap, TrendingUp, TrendingDown, Minus, Send, Shield, Timer,
+  Zap, TrendingUp, TrendingDown, Minus, Send, Shield,
   Activity, Target, ArrowRight, Check, X, FileText, Hash,
   Video, FileVideo, CircleCheck, CircleX, Database,
 } from "lucide-react";
@@ -124,8 +124,8 @@ function SliderTrack({ value, min, max, step, onChange, labels }: {
 function ShortCard({
   short, selected, expanded, onSelect, onExpand, onGenerateTitles, generating,
   multiplyOpen, onOpenMultiply, onCloseMultiply,
-  nChannels, setNChannels, gapHours, setGapHours,
-  processVideo, setProcessVideo, usePeakHours, setUsePeakHours,
+  nChannels, setNChannels,
+  processVideo, setProcessVideo,
   onMultiply, multiplying, multiplyProgress, multiplyResult,
 }: {
   short: MultiplierShort; selected: boolean; expanded: boolean;
@@ -133,9 +133,7 @@ function ShortCard({
   onGenerateTitles: () => void; generating: boolean;
   multiplyOpen: boolean; onOpenMultiply: () => void; onCloseMultiply: () => void;
   nChannels: number; setNChannels: (v: number) => void;
-  gapHours: number; setGapHours: (v: number) => void;
   processVideo: boolean; setProcessVideo: (v: boolean) => void;
-  usePeakHours: boolean; setUsePeakHours: (v: boolean) => void;
   onMultiply: () => void; multiplying: boolean;
   multiplyProgress: { completed: number; total: number; errors: number } | null;
   multiplyResult: any;
@@ -379,14 +377,6 @@ function ShortCard({
                   <SliderTrack value={nChannels} min={1} max={30} onChange={setNChannels}
                     labels={["1", "5", "10", "15", "20", "25", "30"]} />
                 </div>
-                <div className="flex-1">
-                  <div className="flex justify-between items-center mb-1.5">
-                    <span className="text-xs text-[#777]">Gap between uploads</span>
-                    <span className="text-sm font-bold text-white">{gapHours}h</span>
-                  </div>
-                  <SliderTrack value={gapHours} min={0} max={12} step={0.5} onChange={setGapHours}
-                    labels={["0h", "3h", "6h", "9h", "12h"]} />
-                </div>
               </div>
 
               {/* Upload progress — shows which video is being multiplied */}
@@ -461,7 +451,7 @@ function ShortCard({
                 onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "#cc181e"; }}
               >
                 {multiplying ? (
-                  <><Loader2 className="w-4 h-4 animate-spin" /> Multiplying — sending to n8n...</>
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Multiplying — uploading to YouTube...</>
                 ) : (
                   <>Multiply × {nChannels} channels</>
                 )}
@@ -521,9 +511,7 @@ function MultipliedVideosTab() {
   // Boost modal state
   const [modalVideo, setModalVideo] = useState<MultipliedVideo | null>(null);
   const [moreChannels, setMoreChannels] = useState(3);
-  const [moreGapHours, setMoreGapHours] = useState(2);
   const [moreProcessVideo, setMoreProcessVideo] = useState(true);
-  const [moreUsePeak, setMoreUsePeak] = useState(true);
   const [multiplying, setMultiplying] = useState(false);
 
   const fetchVideos = useCallback(async () => {
@@ -540,24 +528,22 @@ function MultipliedVideosTab() {
     if (!modalVideo) return;
     setMultiplying(true);
     try {
-      const res = await fetch(`${API}/upload/multiply-via-webhook`, {
+      const res = await fetch(`${API}/upload/multiply-direct`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           video_ids: [modalVideo.video_id],
           n_channels: moreChannels,
-          gap_hours: moreGapHours,
           process_video: moreProcessVideo,
-          use_peak_hours: moreUsePeak,
         }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.detail || "Failed");
-      success(`Boosting to ${d.total_webhooks} more channels...`);
+      success(`Uploading to ${d.total_webhooks} more channels...`);
       setModalVideo(null);
       const poll = async () => {
         try {
-          const st = await fetch(`${API}/upload/multiply-via-webhook/status`).then((r) => r.json());
+          const st = await fetch(`${API}/upload/multiply-direct/status`).then((r) => r.json());
           if (st.running) { setTimeout(poll, 3000); }
           else {
             setMultiplying(false);
@@ -803,48 +789,25 @@ function MultipliedVideosTab() {
                 labels={["1", "5", "10", "15", "20", "25", "30"]} />
             </div>
 
-            {/* Gap slider */}
-            <div>
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-xs text-[#777]">Gap between uploads</span>
-                <span className="text-sm font-bold text-white">{moreGapHours}h</span>
-              </div>
-              <SliderTrack value={moreGapHours} min={0} max={12} step={0.5} onChange={setMoreGapHours}
-                labels={["0h", "3h", "6h", "9h", "12h"]} />
-            </div>
-
             {/* Toggles */}
-            <div className="grid grid-cols-2 gap-2">
+            <div>
               <button
                 onClick={() => setMoreProcessVideo(!moreProcessVideo)}
-                className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border transition-all text-left ${
+                className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-xl border transition-all text-left ${
                   moreProcessVideo ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400" : "bg-[#0A0A0A] border-[#1C1C1C] text-[#555]"
                 }`}
               >
                 <Shield className="w-3.5 h-3.5 flex-shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-[11px] font-medium">ffmpeg</p>
-                  <p className="text-[9px] opacity-60">Anti-duplicate</p>
+                  <p className="text-[11px] font-medium">ffmpeg Processing</p>
+                  <p className="text-[9px] opacity-60">Unique video per channel (anti-duplicate)</p>
                 </div>
                 {moreProcessVideo ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
-              </button>
-              <button
-                onClick={() => setMoreUsePeak(!moreUsePeak)}
-                className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border transition-all text-left ${
-                  moreUsePeak ? "bg-sky-500/10 border-sky-500/25 text-sky-400" : "bg-[#0A0A0A] border-[#1C1C1C] text-[#555]"
-                }`}
-              >
-                <Timer className="w-3.5 h-3.5 flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-[11px] font-medium">Peak Hours</p>
-                  <p className="text-[9px] opacity-60">IST 12-2, 6-10 PM</p>
-                </div>
-                {moreUsePeak ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
               </button>
             </div>
 
             {/* Summary */}
-            <div className="bg-[#0A0A0A] rounded-xl p-3 border border-[#1A1A1A] grid grid-cols-3 gap-3 text-center">
+            <div className="bg-[#0A0A0A] rounded-xl p-3 border border-[#1A1A1A] grid grid-cols-2 gap-3 text-center">
               <div>
                 <p className="text-[10px] text-[#444]">New Uploads</p>
                 <p className="text-lg font-bold text-orange-400">{moreChannels}</p>
@@ -852,10 +815,6 @@ function MultipliedVideosTab() {
               <div>
                 <p className="text-[10px] text-[#444]">New Multiplier</p>
                 <p className="text-lg font-bold text-white">{modalVideo.multiplier + moreChannels}x</p>
-              </div>
-              <div>
-                <p className="text-[10px] text-[#444]">Duration</p>
-                <p className="text-lg font-bold text-sky-400">{(moreGapHours * moreChannels).toFixed(1)}h</p>
               </div>
             </div>
 
@@ -1153,9 +1112,7 @@ export default function MultiplierRoomPage() {
 
   // Per-row multiply config (shared sliders, one panel open at a time)
   const [nChannels, setNChannels] = useState(5);
-  const [gapHours, setGapHours] = useState(2);
   const [processVideo, setProcessVideo] = useState(true);
-  const [usePeakHours, setUsePeakHours] = useState(true);
   // Per-video multiply state (keyed by video_id)
   const [multiplyingFor, setMultiplyingFor] = useState<string | null>(null);
   const [multiplyProgressFor, setMultiplyProgressFor] = useState<Record<string, { completed: number; total: number; errors: number }>>({});
@@ -1222,25 +1179,23 @@ export default function MultiplierRoomPage() {
     setMultiplyingFor(videoId);
     setMultiplyResultFor((prev) => ({ ...prev, [videoId]: null }));
     try {
-      const res = await fetch(`${API}/upload/multiply-via-webhook`, {
+      const res = await fetch(`${API}/upload/multiply-direct`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           video_ids: [videoId],
           n_channels: nChannels,
-          gap_hours: gapHours,
           process_video: processVideo,
-          use_peak_hours: usePeakHours,
         }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.detail || "Failed");
       if (d.total_webhooks === 0) { setMultiplyingFor(null); return; }
-      success(`Multiplying! Sending ${d.total_webhooks} uploads to n8n...`);
+      success(`Multiplying! Uploading to ${d.total_webhooks} channels...`);
       setMultiplyProgressFor((prev) => ({ ...prev, [videoId]: { completed: 0, total: d.total_webhooks, errors: 0 } }));
       const poll = async () => {
         try {
-          const st = await fetch(`${API}/upload/multiply-via-webhook/status`).then((r) => r.json());
+          const st = await fetch(`${API}/upload/multiply-direct/status`).then((r) => r.json());
           if (st.progress?.total_jobs) {
             setMultiplyProgressFor((prev) => ({
               ...prev,
@@ -1265,15 +1220,13 @@ export default function MultiplierRoomPage() {
     setMultiplying(true);
     setMultiplyResult(null);
     try {
-      const res = await fetch(`${API}/upload/multiply-via-webhook`, {
+      const res = await fetch(`${API}/upload/multiply-direct`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           video_ids: Array.from(selected),
           n_channels: nChannels,
-          gap_hours: gapHours,
           process_video: processVideo,
-          use_peak_hours: usePeakHours,
         }),
       });
       const d = await res.json();
@@ -1290,12 +1243,12 @@ export default function MultiplierRoomPage() {
         return;
       }
 
-      success(`Multiplying! Sending ${d.total_webhooks} new uploads to n8n...`);
+      success(`Multiplying! Uploading to ${d.total_webhooks} channels directly...`);
       setMultiplyProgress({ completed: 0, total: d.total_webhooks, errors: 0 });
 
       const poll = async () => {
         try {
-          const st = await fetch(`${API}/upload/multiply-via-webhook/status`).then((r) => r.json());
+          const st = await fetch(`${API}/upload/multiply-direct/status`).then((r) => r.json());
           if (st.progress?.total_jobs) {
             setMultiplyProgress({
               completed: st.progress.completed || 0,
@@ -1425,15 +1378,15 @@ export default function MultiplierRoomPage() {
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-white font-semibold text-sm flex items-center gap-2">
-                <Rocket className="w-4 h-4 text-orange-400" /> Multiply via n8n
+                <Rocket className="w-4 h-4 text-orange-400" /> Direct YouTube Upload
               </h3>
               <p className="text-[11px] text-[#555] mt-0.5">
-                Downloads video &rarr; ffmpeg processing &rarr; AI titles &rarr; sends MP4 + metadata to n8n webhook
+                Downloads video &rarr; ffmpeg processing &rarr; AI titles &rarr; uploads directly to your YouTube channels
               </p>
             </div>
             <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-2.5 py-1">
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-[10px] text-emerald-400 font-medium">n8n handles YouTube upload</span>
+              <span className="text-[10px] text-emerald-400 font-medium">Direct upload via YouTube API</span>
             </div>
           </div>
 
@@ -1447,48 +1400,25 @@ export default function MultiplierRoomPage() {
                 <SliderTrack value={nChannels} min={1} max={30} onChange={setNChannels}
                   labels={["1", "5", "10", "15", "20", "25", "30"]} />
               </div>
-              <div>
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs text-[#777]">Gap between uploads</span>
-                  <span className="text-sm font-bold text-white">{gapHours}h</span>
-                </div>
-                <SliderTrack value={gapHours} min={0} max={12} step={0.5} onChange={setGapHours}
-                  labels={["0h", "3h", "6h", "9h", "12h"]} />
-              </div>
             </div>
 
             <div className="space-y-3">
-              <div className="space-y-2">
-                <button
-                  onClick={() => setProcessVideo(!processVideo)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-all text-left ${
-                    processVideo ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400" : "bg-[#0A0A0A] border-[#1C1C1C] text-[#555]"
-                  }`}
-                >
-                  <Shield className="w-4 h-4 flex-shrink-0" />
-                  <div className="flex-1">
-                    <p className="text-[12px] font-medium">ffmpeg Processing</p>
-                    <p className="text-[10px] opacity-60">Unique video per channel (anti-duplicate)</p>
-                  </div>
-                  {processVideo ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
-                </button>
-                <button
-                  onClick={() => setUsePeakHours(!usePeakHours)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-all text-left ${
-                    usePeakHours ? "bg-sky-500/10 border-sky-500/25 text-sky-400" : "bg-[#0A0A0A] border-[#1C1C1C] text-[#555]"
-                  }`}
-                >
-                  <Timer className="w-4 h-4 flex-shrink-0" />
-                  <div className="flex-1">
-                    <p className="text-[12px] font-medium">Peak Hour Scheduling</p>
-                    <p className="text-[10px] opacity-60">Upload during 12-2 PM & 6-10 PM IST</p>
-                  </div>
-                  {usePeakHours ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
-                </button>
-              </div>
+              <button
+                onClick={() => setProcessVideo(!processVideo)}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-all text-left ${
+                  processVideo ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400" : "bg-[#0A0A0A] border-[#1C1C1C] text-[#555]"
+                }`}
+              >
+                <Shield className="w-4 h-4 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-[12px] font-medium">ffmpeg Processing</p>
+                  <p className="text-[10px] opacity-60">Unique video per channel (anti-duplicate)</p>
+                </div>
+                {processVideo ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
+              </button>
 
               <div className="bg-[#0A0A0A] rounded-xl p-3 border border-[#1A1A1A]">
-                <div className="grid grid-cols-3 gap-3 text-center">
+                <div className="grid grid-cols-2 gap-3 text-center">
                   <div>
                     <p className="text-[10px] text-[#444]">Videos</p>
                     <p className="text-lg font-bold text-white">{selected.size}</p>
@@ -1497,24 +1427,20 @@ export default function MultiplierRoomPage() {
                     <p className="text-[10px] text-[#444]">Total Uploads</p>
                     <p className="text-lg font-bold text-orange-400">{selected.size * nChannels}</p>
                   </div>
-                  <div>
-                    <p className="text-[10px] text-[#444]">Duration</p>
-                    <p className="text-lg font-bold text-sky-400">{(gapHours * nChannels).toFixed(1)}h</p>
-                  </div>
                 </div>
               </div>
             </div>
           </div>
 
           <div className="bg-[#0A0A0A] rounded-xl p-3 border border-[#1A1A1A]">
-            <p className="text-[10px] text-[#555] font-medium mb-1.5">Each webhook payload contains:</p>
+            <p className="text-[10px] text-[#555] font-medium mb-1.5">Each upload includes:</p>
             <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[10px] text-[#666]">
               <p className="flex items-center gap-1"><Check className="w-2.5 h-2.5 text-emerald-500" /> Actual MP4 video file</p>
               <p className="flex items-center gap-1"><Check className="w-2.5 h-2.5 text-emerald-500" /> AI-generated title (unique per ch)</p>
               <p className="flex items-center gap-1"><Check className="w-2.5 h-2.5 text-emerald-500" /> Niche-aware caption</p>
               <p className="flex items-center gap-1"><Check className="w-2.5 h-2.5 text-emerald-500" /> Velocity score & trend data</p>
               <p className="flex items-center gap-1"><Check className="w-2.5 h-2.5 text-emerald-500" /> ffmpeg-processed (if enabled)</p>
-              <p className="flex items-center gap-1"><Check className="w-2.5 h-2.5 text-emerald-500" /> Peak-hour scheduled time</p>
+              <p className="flex items-center gap-1"><Check className="w-2.5 h-2.5 text-emerald-500" /> Direct YouTube API upload</p>
             </div>
           </div>
 
@@ -1524,7 +1450,7 @@ export default function MultiplierRoomPage() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin" />
-                  <span className="text-[12px] text-white font-medium">Uploading to n8n...</span>
+                  <span className="text-[12px] text-white font-medium">Uploading to YouTube...</span>
                 </div>
                 <span className="text-[12px] font-bold tabular-nums text-orange-400">
                   {multiplyProgress.completed} / {multiplyProgress.total}
@@ -1589,7 +1515,7 @@ export default function MultiplierRoomPage() {
             className="w-full flex items-center justify-center gap-2 font-semibold text-sm py-3.5"
           >
             {multiplying ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /> Multiplying &mdash; sending to n8n...</>
+              <><Loader2 className="w-4 h-4 animate-spin" /> Multiplying &mdash; uploading to YouTube...</>
             ) : (
               <><Send className="w-4 h-4" /> Multiply {selected.size} videos &times; {nChannels} channels = {selected.size * nChannels} uploads</>
             )}
@@ -1656,9 +1582,7 @@ export default function MultiplierRoomPage() {
                     onOpenMultiply={() => setMultiplyOpenFor(s.video_id)}
                     onCloseMultiply={() => setMultiplyOpenFor(null)}
                     nChannels={nChannels} setNChannels={setNChannels}
-                    gapHours={gapHours} setGapHours={setGapHours}
                     processVideo={processVideo} setProcessVideo={setProcessVideo}
-                    usePeakHours={usePeakHours} setUsePeakHours={setUsePeakHours}
                     onMultiply={() => handleMultiplySingle(s.video_id)}
                     multiplying={multiplyingFor === s.video_id}
                     multiplyProgress={multiplyProgressFor[s.video_id] || null}

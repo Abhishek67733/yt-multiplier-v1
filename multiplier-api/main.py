@@ -12,10 +12,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import httpx
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
+from google_auth_oauthlib.flow import Flow
+from googleapiclient.discovery import build as google_build
+from google.oauth2.credentials import Credentials
 
 from database import init_db, db
 from yt_client import get_channel_shorts, channel_info, get_video_stats, download_video_bytes
@@ -42,6 +45,41 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── YouTube OAuth Config ──────────────────────────────────────────────────────
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3001")
+OAUTH_REDIRECT_URI = os.getenv("OAUTH_REDIRECT_URI", "")
+
+YOUTUBE_SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
+]
+
+# Store PKCE code_verifier keyed by state so the callback can retrieve it
+_oauth_pending: dict[str, str] = {}  # state -> code_verifier
+
+def _build_oauth_flow(state: str = None) -> Flow:
+    """Build a Google OAuth flow for YouTube channel connection."""
+    redirect_uri = OAUTH_REDIRECT_URI
+    if not redirect_uri:
+        redirect_uri = "http://localhost:8001/auth/youtube/callback"
+    flow = Flow.from_client_config(
+        {
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [redirect_uri],
+            }
+        },
+        scopes=YOUTUBE_SCOPES,
+        state=state,
+    )
+    flow.redirect_uri = redirect_uri
+    return flow
 
 # ── Startup ────────────────────────────────────────────────────────────────────
 
@@ -87,12 +125,10 @@ class WebhookTestRequest(BaseModel):
     process_video: bool = True  # apply ffmpeg fingerprint avoidance
     use_peak_hours: bool = True  # schedule during IST peak hours
 
-class MultiplyViaWebhookRequest(BaseModel):
+class MultiplyDirectRequest(BaseModel):
     video_ids: list[str]
     n_channels: int = 5
-    gap_hours: float = 2
     process_video: bool = True
-    use_peak_hours: bool = True
 
 
 # ── Source Channels ────────────────────────────────────────────────────────────
@@ -160,6 +196,83 @@ def enrich_source_channels():
 def remove_source_channel(channel_id: str):
     with db() as conn:
         conn.execute("DELETE FROM source_channels WHERE id=?", (channel_id,))
+
+
+# ── YouTube OAuth Connect Flow ─────────────────────────────────────────────────
+
+@app.get("/auth/youtube/connect")
+def youtube_oauth_connect():
+    """Step 1: Return Google OAuth consent screen URL."""
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(500, "Google OAuth credentials not configured on the server")
+
+    flow = _build_oauth_flow()
+    auth_url, state = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",
+        include_granted_scopes="true",
+    )
+    # Store the PKCE code_verifier so the callback can use it
+    _oauth_pending[state] = flow.code_verifier
+    return {"auth_url": auth_url, "state": state}
+
+
+@app.get("/auth/youtube/callback")
+def youtube_oauth_callback(code: str = Query(...), state: str = Query(None)):
+    """Step 2: Google redirects here. Exchange code for tokens, store channel."""
+    try:
+        flow = _build_oauth_flow(state=state)
+        # Restore the PKCE code_verifier from the original request
+        code_verifier = _oauth_pending.pop(state, None)
+        if code_verifier:
+            flow.code_verifier = code_verifier
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+
+        youtube = google_build("youtube", "v3", credentials=creds)
+        channels_resp = youtube.channels().list(part="snippet", mine=True).execute()
+        items = channels_resp.get("items", [])
+
+        if not items:
+            return RedirectResponse(
+                f"{FRONTEND_URL}/dashboard?youtube_connect=error&reason=no_channel"
+            )
+
+        channel = items[0]
+        channel_name = channel["snippet"]["title"]
+        channel_id = channel["id"]
+        creds_data = {
+            "token": creds.token,
+            "refresh_token": creds.refresh_token,
+            "token_uri": creds.token_uri,
+            "client_id": creds.client_id,
+            "client_secret": creds.client_secret,
+        }
+        creds_json = json.dumps(creds_data)
+
+        with db() as conn:
+            existing = conn.execute(
+                "SELECT id FROM target_channels WHERE channel_id = ?", (channel_id,)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE target_channels SET oauth_credentials = ?, channel_name = ? WHERE id = ?",
+                    (creds_json, channel_name, existing["id"]),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO target_channels (channel_name, channel_id, oauth_credentials) VALUES (?, ?, ?)",
+                    (channel_name, channel_id, creds_json),
+                )
+
+        return RedirectResponse(
+            f"{FRONTEND_URL}/dashboard?youtube_connect=success&channel={channel_name}"
+        )
+
+    except Exception as e:
+        return RedirectResponse(
+            f"{FRONTEND_URL}/dashboard?youtube_connect=error&reason={str(e)[:100]}"
+        )
 
 
 # ── Target Channels ────────────────────────────────────────────────────────────
@@ -1015,96 +1128,217 @@ def _run_webhook_test(video_ids: list[str], n_channels: int,
     print(f"[webhook] Done: {len(results)} sent, {len(errors)} errors")
 
 
-# ── Multiply via n8n Webhook (production flow) ──────────────────────────────
+# ── Multiply Direct Upload (production flow) ─────────────────────────────────
 
 _multiply_state: dict = {"running": False, "last_result": None, "progress": {}}
 
-@app.post("/upload/multiply-via-webhook")
-def multiply_via_webhook(body: MultiplyViaWebhookRequest, background_tasks: BackgroundTasks):
+@app.post("/upload/multiply-direct")
+def multiply_direct(body: MultiplyDirectRequest, background_tasks: BackgroundTasks):
     """
-    Production multiply flow: downloads video, processes with ffmpeg,
-    generates unique AI title per channel, sends MP4 + metadata to n8n webhook.
-    n8n handles the actual YouTube upload.
-    Prevents duplicate uploads: same video won't be sent to the same channel twice.
+    Direct multiply flow: downloads video, processes with ffmpeg,
+    generates unique AI title per channel, uploads directly to YouTube
+    using each target channel's stored OAuth credentials.
     """
     if _multiply_state["running"]:
         return {"status": "already_running"}
     if not body.video_ids:
         raise HTTPException(400, "No video_ids provided")
 
-    # Check how many target channels are available
     with db() as conn:
-        target_count = conn.execute("SELECT COUNT(*) FROM target_channels").fetchone()[0]
-        # Also check the highest channel number ever used in webhook_logs
-        max_used = conn.execute(
-            "SELECT COALESCE(MAX(channel_number), 0) FROM webhook_logs"
-        ).fetchone()[0]
-
-    # The true channel pool = max of: DB target channels, slider value, highest ever used
-    # This ensures channels 4, 5 etc. are always in the pool even if target_channels is empty
-    max_channels = max(target_count, body.n_channels, max_used)
-
-    # Smart channel rotation: ALL channels are always available for every video.
-    # Channels are sorted by recency — never-used channels first, then least-recently-used.
-    # This ensures each batch rotates through fresh channels before reusing old ones.
-    #
-    # Example with 5 channels, selecting 3 per batch:
-    #   Batch 1 (Video A): YT1, YT2, YT3 picked (all never-used, equal priority)
-    #   Batch 2 (Video B): YT4, YT5 picked first (never-used), then YT1 (oldest upload)
-    #   Batch 3 (Video C): YT2, YT3 picked first (least recent), then YT4 next
-    valid_video_ids = []
-    video_available_channels = {}
-
-    with db() as conn:
-        # For each channel, get the most recent upload timestamp (across ALL videos)
-        # Channels with no uploads get NULL → sorted first (never used = top priority)
-        last_upload_per_channel = conn.execute(
-            """SELECT channel_number, MAX(created_at) as last_upload
-               FROM webhook_logs WHERE status='sent'
-               GROUP BY channel_number"""
+        targets = conn.execute(
+            """SELECT id, channel_name, oauth_credentials, upload_count, last_upload_at
+               FROM target_channels ORDER BY
+               CASE WHEN last_upload_at IS NULL THEN 0 ELSE 1 END,
+               last_upload_at ASC, upload_count ASC"""
         ).fetchall()
-        last_upload_map = {r[0]: r[1] for r in last_upload_per_channel}
 
-    all_channel_nums = list(range(1, max_channels + 1))
+    if not targets:
+        raise HTTPException(400, "No target channels connected. Add channels in Target Channels tab.")
 
-    for vid_id in body.video_ids:
-        # Sort all channels: never-used first (no entry in map), then oldest upload first
-        sorted_channels = sorted(
-            all_channel_nums,
-            key=lambda ch: last_upload_map.get(ch) or "0000-00-00"  # never-used → sorts first
-        )
-        # Pick the top n_channels (least recently used)
-        available = sorted_channels[:body.n_channels]
-        valid_video_ids.append(vid_id)
-        video_available_channels[vid_id] = available
+    n = min(body.n_channels, len(targets))
+    selected_targets = [dict(t) for t in targets[:n]]
 
     _multiply_state["running"] = True
     _multiply_state["last_result"] = None
-
-    total_new_uploads = sum(len(video_available_channels[v]) for v in valid_video_ids)
     _multiply_state["progress"] = {
-        "total_videos": len(valid_video_ids),
-        "total_channels": body.n_channels,
-        "total_jobs": total_new_uploads,
+        "total_videos": len(body.video_ids),
+        "total_channels": n,
+        "total_jobs": len(body.video_ids) * n,
         "completed": 0,
         "errors": 0,
-        "skipped_videos": [],
     }
+
     background_tasks.add_task(
-        _run_webhook_test, valid_video_ids, body.n_channels,
-        body.process_video, body.use_peak_hours,
-        video_available_channels,
+        _run_direct_multiply, body.video_ids, selected_targets, body.process_video
     )
     return {
         "status": "multiply_started",
-        "videos": len(valid_video_ids),
-        "channels_per_video": body.n_channels,
-        "total_webhooks": total_new_uploads,
-        "webhook_url": WEBHOOK_URL,
+        "videos": len(body.video_ids),
+        "channels_per_video": n,
+        "total_uploads": len(body.video_ids) * n,
         "ffmpeg_processing": body.process_video,
-        "peak_hour_scheduling": body.use_peak_hours,
-        "skipped": [],
+        "channels": [t["channel_name"] for t in selected_targets],
     }
+
+
+# Keep backward compat — old endpoint redirects to new
+@app.post("/upload/multiply-via-webhook")
+def multiply_via_webhook_compat(body: MultiplyDirectRequest, background_tasks: BackgroundTasks):
+    return multiply_direct(body, background_tasks)
+
+
+def _run_direct_multiply(video_ids: list[str], targets: list[dict], do_process: bool):
+    """Download each video, generate AI titles, upload directly to each target channel."""
+    results = []
+    errors = []
+    cleanup_files = []
+
+    for vid_id in video_ids:
+        with db() as conn:
+            short = conn.execute("SELECT * FROM shorts WHERE video_id=?", (vid_id,)).fetchone()
+            if not short:
+                errors.append(f"{vid_id}: not found in DB")
+                _multiply_state["progress"]["completed"] = _multiply_state["progress"].get("completed", 0) + len(targets)
+                continue
+            short = dict(short)
+
+        # Generate AI titles
+        ai_titles = []
+        try:
+            for _ in range(len(targets)):
+                t = generate_title_variation(short["title"] or "Short Video")
+                ai_titles.append(t)
+        except Exception:
+            ai_titles = [short["title"] or "Short Video"] * len(targets)
+
+        # Generate AI caption
+        try:
+            caption = generate_caption_variation(short["title"] or "", short["description"] or "")
+        except Exception:
+            caption = short["description"] or short["title"] or ""
+
+        # Download video
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+                tmp_path = tmp.name
+            cleanup_files.append(tmp_path)
+            video_url = short["url"] or f"https://www.youtube.com/shorts/{vid_id}"
+            print(f"[multiply] Downloading {vid_id}...")
+            download_video_bytes(video_url, tmp_path)
+            print(f"[multiply] Downloaded {vid_id}: {os.path.getsize(tmp_path) / 1024:.0f} KB")
+        except Exception as e:
+            errors.append(f"{vid_id}: download failed - {e}")
+            _multiply_state["progress"]["completed"] = _multiply_state["progress"].get("completed", 0) + len(targets)
+            continue
+
+        # Upload to each target channel
+        for i, target in enumerate(targets):
+            picked_title = ai_titles[i % len(ai_titles)]
+            channel_name = target["channel_name"]
+            tc_id = target["id"]
+
+            # Process video with ffmpeg for uniqueness per channel
+            send_path = tmp_path
+            if do_process:
+                try:
+                    processed_path = process_video(tmp_path, channel_num=i + 1)
+                    if processed_path != tmp_path:
+                        cleanup_files.append(processed_path)
+                        send_path = processed_path
+                except Exception as e:
+                    print(f"[multiply] Video processing skipped for {channel_name}: {e}")
+
+            try:
+                print(f"[multiply] Uploading {vid_id} -> {channel_name}...")
+                result = upload_short(
+                    video_path=send_path,
+                    title=picked_title,
+                    description=caption,
+                    oauth_credentials_json=target["oauth_credentials"],
+                )
+                yt_video_id = result["youtube_video_id"]
+
+                # Update DB
+                with db() as conn:
+                    conn.execute(
+                        "UPDATE target_channels SET upload_count=upload_count+1, last_upload_at=datetime('now'), oauth_credentials=? WHERE id=?",
+                        (json.dumps(result["updated_credentials"]), tc_id),
+                    )
+                    # Log in webhook_logs for stats tracking
+                    conn.execute(
+                        """INSERT INTO webhook_logs
+                           (video_id, original_title, new_title, caption, channel_number,
+                            channel_name, total_channels, file_size_bytes, video_processed,
+                            scheduled_at, webhook_status, webhook_url, velocity_score,
+                            trend, thumbnail, status, uploaded_video_id)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            vid_id, short["title"], picked_title, caption, i + 1,
+                            channel_name, len(targets), os.path.getsize(send_path),
+                            1 if do_process else 0,
+                            datetime.now(timezone.utc).isoformat(), 200, "direct_upload",
+                            short.get("velocity_score") or 0, short.get("trend") or "flat",
+                            short.get("thumbnail") or "", "sent", yt_video_id,
+                        ),
+                    )
+
+                results.append({
+                    "video_id": vid_id,
+                    "channel": channel_name,
+                    "title_used": picked_title,
+                    "youtube_video_id": yt_video_id,
+                })
+                print(f"[multiply] Uploaded {vid_id} -> {channel_name} (yt:{yt_video_id})")
+
+            except Exception as e:
+                err = f"{vid_id} -> {channel_name}: upload failed - {e}"
+                errors.append(err)
+                _multiply_state["progress"]["errors"] = _multiply_state["progress"].get("errors", 0) + 1
+                # Log failure
+                try:
+                    with db() as conn:
+                        conn.execute(
+                            """INSERT INTO webhook_logs
+                               (video_id, original_title, new_title, caption, channel_number,
+                                channel_name, total_channels, file_size_bytes, video_processed,
+                                scheduled_at, webhook_url, velocity_score, trend, thumbnail,
+                                error_message, status)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (
+                                vid_id, short["title"], picked_title, caption, i + 1,
+                                channel_name, len(targets), 0, 1 if do_process else 0,
+                                datetime.now(timezone.utc).isoformat(), "direct_upload",
+                                short.get("velocity_score") or 0, short.get("trend") or "flat",
+                                short.get("thumbnail") or "", str(e), "failed",
+                            ),
+                        )
+                except Exception:
+                    pass
+                print(f"[multiply] {err}")
+
+            _multiply_state["progress"]["completed"] = _multiply_state["progress"].get("completed", 0) + 1
+
+        # Mark short as done
+        with db() as conn:
+            conn.execute("UPDATE shorts SET status='done' WHERE video_id=?", (vid_id,))
+
+    # Cleanup temp files
+    for f in cleanup_files:
+        try:
+            os.unlink(f)
+        except Exception:
+            pass
+
+    final_result = {
+        "total_uploaded": len(results),
+        "total_errors": len(errors),
+        "results": results,
+        "errors": errors,
+    }
+    _multiply_state["last_result"] = final_result
+    _multiply_state["running"] = False
+    print(f"[multiply] Done: {len(results)} uploaded, {len(errors)} errors")
 
 
 @app.get("/upload/multiply-via-webhook/status")
@@ -1112,8 +1346,12 @@ def multiply_status():
     return {
         "running": _multiply_state["running"],
         "progress": _multiply_state["progress"],
-        "last_result": _multiply_state.get("last_result") or _webhook_state.get("last_result"),
+        "last_result": _multiply_state.get("last_result"),
     }
+
+@app.get("/upload/multiply-direct/status")
+def multiply_direct_status():
+    return multiply_status()
 
 
 # ── Multiplied Videos View ────────────────────────────────────────────────────
