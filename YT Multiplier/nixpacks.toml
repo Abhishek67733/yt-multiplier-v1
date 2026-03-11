@@ -7,7 +7,8 @@ nixPkgs = ["python311", "ffmpeg"]
 cmds = ["python3.11 -m venv /opt/venv", "/opt/venv/bin/pip install --upgrade pip", "/opt/venv/bin/pip install -r requirements.txt"]
 
 [phases.build]
-cmds = ["echo 'build done'"]
+cmds = ["echo 'Python-only build, skipping npm'"]
+dependsOn = ["install"]
 
 [start]
 cmd = "/opt/venv/bin/uvicorn main:app --host 0.0.0.0 --port $PORT"
