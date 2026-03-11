@@ -5,3 +5,6 @@ __pycache__/
 .env
 *.db
 .git/
+node_modules/
+package.json
+package-lock.json
