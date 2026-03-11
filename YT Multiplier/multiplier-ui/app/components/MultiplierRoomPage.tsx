@@ -1123,6 +1123,41 @@ export default function MultiplierRoomPage() {
   const [multiplyResult, setMultiplyResult] = useState<any>(null);
   const [multiplyProgress, setMultiplyProgress] = useState<{ completed: number; total: number; errors: number } | null>(null);
   const [showMultiply, setShowMultiply] = useState(false);
+  const [scanning, setScanning] = useState(false);
+
+  const handleScan = async () => {
+    setScanning(true);
+    try {
+      const res = await fetch(`${API}/shorts/scan`, { method: "POST" });
+      const data = await res.json();
+      if (data.status === "already_running") {
+        success("Scan already in progress...");
+      }
+      const poll = async () => {
+        try {
+          const st = await fetch(`${API}/shorts/scan/status`).then((r) => r.json());
+          if (st.running) {
+            setTimeout(poll, 2000);
+          } else {
+            await fetchAll();
+            setScanning(false);
+            const r = st.last_result;
+            if (r?.error) {
+              error(`Scan error: ${r.error}`);
+            } else if (r) {
+              success(`Scan done: ${r.new_shorts} new, ${r.queued_shorts} queued`);
+            }
+          }
+        } catch {
+          setScanning(false);
+        }
+      };
+      setTimeout(poll, 2000);
+    } catch {
+      error("Could not start scan");
+      setScanning(false);
+    }
+  };
 
   const fetchAll = useCallback(async () => {
     try {
@@ -1293,6 +1328,16 @@ export default function MultiplierRoomPage() {
         <div className="flex items-center gap-2">
           {subTab === "shorts" && (
             <>
+              <button
+                onClick={handleScan}
+                disabled={scanning}
+                className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-2 rounded-lg border border-[#3a3a3a] text-white transition-all disabled:opacity-40"
+                style={{ background: "linear-gradient(to bottom, #2a2a2a, #161616)" }}
+                title="Scan source channels for new Shorts"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${scanning ? "animate-spin" : ""}`} />
+                {scanning ? "Scanning..." : "Scan"}
+              </button>
               <button
                 onClick={handleGenerateAll}
                 disabled={generatingAll || shorts.length === 0}

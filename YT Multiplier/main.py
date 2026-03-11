@@ -121,6 +121,25 @@ def get_or_create_me():
     return {"user_id": uid}
 
 
+class IdentifyRequest(BaseModel):
+    email: str
+    name: str | None = None
+    avatar_url: str | None = None
+
+
+@app.post("/auth/identify")
+def identify_user(body: IdentifyRequest):
+    """Update the default user with real email/name from NextAuth session."""
+    uid = _ensure_default_user()
+    update = {"email": body.email}
+    if body.name:
+        update["name"] = body.name
+    if body.avatar_url:
+        update["avatar_url"] = body.avatar_url
+    supabase.table("users").update(update).eq("id", uid).execute()
+    return {"user_id": uid, "email": body.email}
+
+
 # ── Request / Response Models ──────────────────────────────────────────────────
 
 class AddSourceChannel(BaseModel):
