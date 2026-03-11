@@ -75,3 +75,5 @@ INDEX.md
 !multiplier-ui/eslint.config.mjs
 !multiplier-api/railway.json
 !multiplier-api/.env.example
+!railway.json
+!nixpacks.toml
