@@ -209,11 +209,19 @@ def youtube_oauth_connect():
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(500, "Google OAuth credentials not configured on the server")
 
-    flow = _build_oauth_flow()
-    auth_url, state = flow.authorization_url(
-        access_type="offline",
-        prompt="consent",
-        include_granted_scopes="true",
+    redirect_uri = OAUTH_REDIRECT_URI or "http://localhost:8001/auth/youtube/callback"
+    scopes = " ".join(YOUTUBE_SCOPES)
+    import secrets
+    state = secrets.token_urlsafe(22)
+    auth_url = (
+        f"https://accounts.google.com/o/oauth2/auth"
+        f"?response_type=code"
+        f"&client_id={GOOGLE_CLIENT_ID}"
+        f"&redirect_uri={redirect_uri}"
+        f"&scope={scopes}"
+        f"&access_type=offline"
+        f"&prompt=consent"
+        f"&state={state}"
     )
     return {"auth_url": auth_url, "state": state}
 
@@ -226,9 +234,25 @@ def youtube_oauth_callback(code: str = Query(...), state: str = Query(None)):
     Then redirect to the frontend with a success message.
     """
     try:
-        flow = _build_oauth_flow(state=state)
-        flow.fetch_token(code=code)
-        creds = flow.credentials
+        redirect_uri = OAUTH_REDIRECT_URI or "http://localhost:8001/auth/youtube/callback"
+        token_resp = httpx.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        })
+        token_data = token_resp.json()
+        if "error" in token_data:
+            raise Exception(f"{token_data['error']}: {token_data.get('error_description', '')}")
+
+        creds = Credentials(
+            token=token_data["access_token"],
+            refresh_token=token_data.get("refresh_token"),
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=GOOGLE_CLIENT_ID,
+            client_secret=GOOGLE_CLIENT_SECRET,
+        )
 
         # Fetch the user's YouTube channel info
         youtube = google_build("youtube", "v3", credentials=creds)
