@@ -76,6 +76,7 @@ export default function ReachStatsPage() {
   const [expandedVideo, setExpandedVideo] = useState<string | null>(null);
 
   const fetchStats = useCallback(async () => {
+    if (!userEmail) return;
     try {
       const res = await fetch(`${API}/reach/stats`, { headers: { "x-user-email": userEmail } });
       const data = await res.json();
@@ -95,6 +96,7 @@ export default function ReachStatsPage() {
   }, [fetchStats, status, userEmail]);
 
   const handleRefresh = async () => {
+    if (!userEmail) return;
     setRefreshing(true);
     try {
       await fetch(`${API}/reach/refresh`, { method: "POST", headers: { "x-user-email": userEmail } });

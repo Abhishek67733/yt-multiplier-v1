@@ -518,6 +518,7 @@ function MultipliedVideosTab() {
   const [multiplying, setMultiplying] = useState(false);
 
   const fetchVideos = useCallback(async () => {
+    if (!userEmail) return;
     try {
       const data = await fetch(`${API}/upload/multiplied-videos`, { headers: { "x-user-email": userEmail } }).then((r) => r.json());
       setVideos(Array.isArray(data) ? data : []);
@@ -528,7 +529,7 @@ function MultipliedVideosTab() {
   useEffect(() => { if (status === "authenticated" && userEmail) fetchVideos(); }, [fetchVideos, status, userEmail]);
 
   const handleBoost = async () => {
-    if (!modalVideo) return;
+    if (!modalVideo || !userEmail) return;
     setMultiplying(true);
     try {
       const res = await fetch(`${API}/upload/multiply-direct`, {
@@ -563,6 +564,7 @@ function MultipliedVideosTab() {
   const [expandedChannels, setExpandedChannels] = useState<Set<string>>(new Set());
 
   const handleRefreshStats = async () => {
+    if (!userEmail) return;
     setRefreshingStats(true);
     try {
       await fetch(`${API}/upload/refresh-stats`, { method: "POST", headers: { "x-user-email": userEmail } });
@@ -898,6 +900,7 @@ function UploadLogTab() {
   const [expandedLog, setExpandedLog] = useState<number | null>(null);
 
   const fetchLogs = useCallback(async () => {
+    if (!userEmail) return;
     try {
       const [logsRes, summaryRes] = await Promise.all([
         fetch(`${API}/upload/webhook-logs`, { headers: { "x-user-email": userEmail } }).then((r) => r.json()),
@@ -1131,6 +1134,7 @@ export default function MultiplierRoomPage() {
   const [showMultiply, setShowMultiply] = useState(false);
 
   const fetchAll = useCallback(async () => {
+    if (!userEmail) return;
     try {
       const s = await fetch(`${API}/shorts/multiplier-room`, { headers: { "x-user-email": userEmail } }).then((r) => r.json());
       setShorts(Array.isArray(s) ? s : []);
@@ -1159,6 +1163,7 @@ export default function MultiplierRoomPage() {
   };
 
   const handleGenerateTitles = async (videoId: string) => {
+    if (!userEmail) return;
     setGenerating((prev) => new Set(prev).add(videoId));
     try {
       const res = await fetch(`${API}/shorts/${videoId}/generate-titles`, { method: "POST", headers: { "x-user-email": userEmail } });
@@ -1172,6 +1177,7 @@ export default function MultiplierRoomPage() {
   };
 
   const handleGenerateAll = async () => {
+    if (!userEmail) return;
     setGeneratingAll(true);
     try {
       await fetch(`${API}/shorts/generate-all-titles`, { method: "POST", headers: { "x-user-email": userEmail } });
@@ -1183,6 +1189,7 @@ export default function MultiplierRoomPage() {
   };
 
   const handleMultiplySingle = async (videoId: string) => {
+    if (!userEmail) return;
     setMultiplyingFor(videoId);
     setMultiplyResultFor((prev) => ({ ...prev, [videoId]: null }));
     try {
@@ -1223,6 +1230,7 @@ export default function MultiplierRoomPage() {
   };
 
   const handleMultiply = async () => {
+    if (!userEmail) return;
     if (selected.size === 0) { error("Select at least one Short"); return; }
     setMultiplying(true);
     setMultiplyResult(null);

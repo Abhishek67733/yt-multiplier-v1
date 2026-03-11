@@ -65,6 +65,7 @@ export default function TargetChannelsPage() {
   const [connecting, setConnecting] = useState(false);
 
   const fetchChannels = useCallback(async () => {
+    if (!userEmail) return;
     try {
       const res = await fetch(`${API}/channels/target`, { headers: { "x-user-email": userEmail } });
       const data = await res.json();
@@ -100,6 +101,7 @@ export default function TargetChannelsPage() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleConnect = async () => {
+    if (!userEmail) { error("Please sign in first"); return; }
     setConnecting(true);
     try {
       const res = await fetch(`${API}/auth/youtube/connect`, { headers: { "x-user-email": userEmail } });
@@ -117,6 +119,7 @@ export default function TargetChannelsPage() {
   };
 
   const handleRemove = async (id: number) => {
+    if (!userEmail) return;
     await fetch(`${API}/channels/target/${id}`, { method: "DELETE", headers: { "x-user-email": userEmail } });
     success("Channel disconnected");
     await fetchChannels();

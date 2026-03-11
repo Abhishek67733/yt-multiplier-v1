@@ -93,6 +93,7 @@ export default function UploadQueuePage() {
   const [activeJobTab, setActiveJobTab] = useState<"all" | "pending" | "done" | "failed">("all");
 
   const fetchAll = useCallback(async () => {
+    if (!userEmail) return;
     try {
       const [q, j, t] = await Promise.all([
         fetch(`${API}/shorts/queue`, { headers: { "x-user-email": userEmail } }).then((r) => r.json()),
@@ -116,7 +117,7 @@ export default function UploadQueuePage() {
   }, [fetchAll, status, userEmail]);
 
   const handleLaunch = async () => {
-    if (!selected) return;
+    if (!selected || !userEmail) return;
     if (targets.length === 0) {
       error("No target channels configured — go to Target Channels first");
       return;
@@ -141,6 +142,7 @@ export default function UploadQueuePage() {
   };
 
   const handleExecuteNow = async (jobId: number) => {
+    if (!userEmail) return;
     await fetch(`${API}/upload/execute/${jobId}`, { method: "POST", headers: { "x-user-email": userEmail } });
     success("Upload triggered");
     setTimeout(fetchAll, 2000);

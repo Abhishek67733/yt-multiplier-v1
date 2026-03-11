@@ -446,6 +446,7 @@ export default function SourceChannelsPage() {
   const [apiDown, setApiDown] = useState(false);
 
   const fetchAll = useCallback(async () => {
+    if (!userEmail) return;
     try {
       const [ch, sh] = await Promise.all([
         fetch(`${API}/channels/source`, { headers: { "x-user-email": userEmail } }).then((r) => r.json()),
@@ -460,6 +461,7 @@ export default function SourceChannelsPage() {
   }, [userEmail]);
 
   const handleEnrich = useCallback(async () => {
+    if (!userEmail) return;
     setEnriching(true);
     try {
       await fetch(`${API}/channels/source/enrich`, { method: "POST", headers: { "x-user-email": userEmail } });
@@ -479,7 +481,7 @@ export default function SourceChannelsPage() {
   }, [fetchAll, handleEnrich, status, userEmail]);
 
   const handleAdd = async () => {
-    if (!newUrl.trim()) return;
+    if (!newUrl.trim() || !userEmail) return;
     setAdding(true);
     try {
       const res = await fetch(`${API}/channels/source`, {
@@ -503,12 +505,14 @@ export default function SourceChannelsPage() {
   };
 
   const handleRemove = async (id: string) => {
+    if (!userEmail) return;
     await fetch(`${API}/channels/source/${encodeURIComponent(id)}`, { method: "DELETE", headers: { "x-user-email": userEmail } });
     success("Channel removed");
     await fetchAll();
   };
 
   const handleScan = async () => {
+    if (!userEmail) return;
     setScanning(true);
     try {
       const res = await fetch(`${API}/shorts/scan`, { method: "POST", headers: { "x-user-email": userEmail } });
