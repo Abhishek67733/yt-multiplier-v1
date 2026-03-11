@@ -11,6 +11,7 @@ import {
 import { StatusBadge } from "./ui/Badge";
 import { useToast } from "./ui/Toast";
 import { RainbowButton } from "./ui/rainbow-button";
+import StatCard from "./ui/stat-card";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
@@ -122,132 +123,354 @@ function SliderTrack({ value, min, max, step, onChange, labels }: {
 
 function ShortCard({
   short, selected, expanded, onSelect, onExpand, onGenerateTitles, generating,
+  multiplyOpen, onOpenMultiply, onCloseMultiply,
+  nChannels, setNChannels, gapHours, setGapHours,
+  processVideo, setProcessVideo, usePeakHours, setUsePeakHours,
+  onMultiply, multiplying, multiplyProgress, multiplyResult,
 }: {
   short: MultiplierShort; selected: boolean; expanded: boolean;
   onSelect: () => void; onExpand: () => void;
   onGenerateTitles: () => void; generating: boolean;
+  multiplyOpen: boolean; onOpenMultiply: () => void; onCloseMultiply: () => void;
+  nChannels: number; setNChannels: (v: number) => void;
+  gapHours: number; setGapHours: (v: number) => void;
+  processVideo: boolean; setProcessVideo: (v: boolean) => void;
+  usePeakHours: boolean; setUsePeakHours: (v: boolean) => void;
+  onMultiply: () => void; multiplying: boolean;
+  multiplyProgress: { completed: number; total: number; errors: number } | null;
+  multiplyResult: any;
 }) {
+  const channelUrl = `https://www.youtube.com/channel/${short.channel_id}`;
+  const shortUrl = short.url || `https://youtube.com/shorts/${short.video_id}`;
+  const COLS = 8; // total colspan for expanded rows
+
   return (
-    <div className={`bg-[#111] border rounded-2xl overflow-hidden transition-all ${
-      selected ? "border-red-500/40 ring-1 ring-red-500/20 shadow-lg shadow-red-900/10" : "border-[#1C1C1C] hover:border-[#2A2A2A]"
-    }`}>
-      <div className="flex items-center gap-4 px-5 py-4">
-        <button onClick={onSelect} className="flex-shrink-0">
-          {selected ? (
-            <CheckSquare className="w-5 h-5 text-red-400" />
-          ) : (
-            <Square className="w-5 h-5 text-[#333] hover:text-[#666]" />
-          )}
-        </button>
-
-        <img src={thumbUrl(short.thumbnail, short.video_id)} alt="" className="w-24 h-16 rounded-xl object-cover flex-shrink-0 ring-1 ring-white/5" />
-
-        <div className="flex-1 min-w-0">
-          <p className="text-[13px] text-white font-medium truncate leading-tight">{short.title}</p>
-          <p className="text-[11px] text-[#555] truncate mt-0.5">{short.channel_name || short.channel_id}</p>
-          <div className="flex items-center gap-3 mt-2">
-            <span className="flex items-center gap-1 text-[11px] text-[#666]">
-              <Eye className="w-3 h-3" /> {fmt(short.views_last_check)}
-            </span>
-            <span className="text-[11px] text-red-400 font-bold">
-              +{fmt(short.views_delta)}/24h
-            </span>
-            <span className="flex items-center gap-1 text-[11px] text-[#555]">
-              <ThumbsUp className="w-3 h-3" /> {fmt(short.likes)}
-            </span>
-            <span className="text-[11px] text-[#555]">{short.duration}s</span>
-            <span className="text-[11px] text-[#444]">{fmtDate(short.published_at)}</span>
-          </div>
-        </div>
-
-        {/* Velocity + Trend */}
-        <div className="flex flex-col items-end gap-1.5 flex-shrink-0 mr-2">
-          <div className="flex items-center gap-2">
-            <span className="text-[9px] uppercase tracking-wider text-[#444]">Velocity</span>
-            <VelocityBar score={short.velocity_score || 0} />
-          </div>
-          <TrendBadge trend={short.trend || "flat"} />
-        </div>
-
-        {/* AI Titles */}
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {short.ai_titles.length > 0 ? (
-            <span className="flex items-center gap-1 bg-violet-500/15 text-violet-400 text-[10px] font-bold px-2 py-1 rounded-full border border-violet-500/25">
-              <Sparkles className="w-3 h-3" /> {short.ai_titles.length}
-            </span>
-          ) : (
-            <button
-              onClick={(e) => { e.stopPropagation(); onGenerateTitles(); }}
-              disabled={generating}
-              className="flex items-center gap-1 bg-violet-600/20 hover:bg-violet-600/30 text-violet-400 text-[10px] font-medium px-2.5 py-1 rounded-full border border-violet-500/25 transition-colors disabled:opacity-40"
-            >
-              {generating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
-              AI
-            </button>
-          )}
-
-          <button onClick={onExpand} className="text-[#444] hover:text-[#aaa] p-1 transition-colors">
-            {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+    <>
+      {/* Main row */}
+      <tr
+        className={`border-b border-[#181818] transition-colors hover:bg-white/[0.02] ${
+          selected ? "bg-red-950/10" : ""
+        } ${multiplyOpen ? "border-orange-500/20" : ""}`}
+      >
+        {/* Checkbox */}
+        <td className="w-10 px-3 py-3.5 align-middle">
+          <button onClick={onSelect} className="flex-shrink-0">
+            {selected
+              ? <CheckSquare className="w-4 h-4 text-red-400" />
+              : <Square className="w-4 h-4 text-[#333] hover:text-[#666]" />}
           </button>
+        </td>
 
-          <a href={short.url || `https://youtube.com/shorts/${short.video_id}`}
-            target="_blank" rel="noopener noreferrer"
-            className="text-[#444] hover:text-[#aaa] transition-colors">
-            <ExternalLink className="w-3.5 h-3.5" />
+        {/* Thumbnail + Short Name (hyperlinked) */}
+        <td className="px-3 py-3.5 align-middle min-w-[220px] max-w-[260px]">
+          <div className="flex items-center gap-2.5">
+            <img
+              src={thumbUrl(short.thumbnail, short.video_id)}
+              alt=""
+              className="w-16 h-10 rounded-lg object-cover flex-shrink-0 ring-1 ring-white/10"
+            />
+            <a
+              href={shortUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[13px] text-white font-medium leading-tight line-clamp-2 hover:text-sky-400 transition-colors"
+            >
+              {short.title}
+            </a>
+          </div>
+        </td>
+
+        {/* Channel Name (hyperlinked) */}
+        <td className="px-3 py-3.5 align-middle min-w-[130px] max-w-[170px]">
+          <a
+            href={channelUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[12px] text-[#aaa] hover:text-sky-400 transition-colors truncate block"
+          >
+            {short.channel_name || short.channel_id}
           </a>
-        </div>
-      </div>
+        </td>
 
-      {expanded && (
-        <div className="border-t border-[#1C1C1C] px-5 py-4">
-          <div className="grid grid-cols-3 gap-4">
+        {/* Total Views */}
+        <td className="px-3 py-3.5 align-middle text-right">
+          <span className="text-[13px] font-bold text-white tabular-nums">{fmt(short.views_last_check)}</span>
+        </td>
+
+        {/* 24h Delta */}
+        <td className="px-3 py-3.5 align-middle text-right">
+          <span className="text-[13px] font-bold text-red-400 tabular-nums">+{fmt(short.views_delta)}</span>
+        </td>
+
+        {/* Original Title */}
+        <td className="px-3 py-3.5 align-middle min-w-[180px] max-w-[220px]">
+          <p className="text-[12px] text-[#888] leading-snug line-clamp-2">{short.title}</p>
+        </td>
+
+        {/* New / AI Titles — shows first title + expand hint */}
+        <td className="px-3 py-3.5 align-middle min-w-[180px] max-w-[220px]">
+          {short.ai_titles.length > 0 ? (
             <div>
-              <p className="text-[10px] text-[#444] uppercase tracking-wider mb-2">Original Info</p>
-              <p className="text-[12px] text-[#aaa] font-medium">{short.title}</p>
-              {short.description && (
-                <p className="text-[11px] text-[#555] mt-1 line-clamp-3">{short.description}</p>
+              <p className="text-[12px] text-violet-300 leading-snug line-clamp-2">{short.ai_titles[0].title}</p>
+              {short.ai_titles.length > 1 && (
+                <button
+                  onClick={onExpand}
+                  className="mt-1 text-[10px] text-violet-500 hover:text-violet-300 transition-colors flex items-center gap-0.5"
+                >
+                  {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                  {expanded ? "Hide" : `+${short.ai_titles.length - 1} more`}
+                </button>
               )}
-              <div className="flex items-center gap-3 mt-2">
-                <div className="text-[10px]">
-                  <span className="text-[#444]">Growth: </span>
-                  <span className="text-white font-bold">{(short.growth_rate || 0).toFixed(1)}</span>
-                  <span className="text-[#555]"> views/hr</span>
+            </div>
+          ) : (
+            <span className="text-[11px] text-[#444] italic">No titles yet</span>
+          )}
+        </td>
+
+        {/* Actions */}
+        <td className="px-3 py-3.5 align-middle">
+          <div className="flex items-center gap-1.5">
+            {/* Expand chevron */}
+            <button
+              onClick={onExpand}
+              className="p-1.5 text-[#555] hover:text-white rounded-lg border border-[#222] hover:border-[#444] transition-colors"
+              title="Expand details"
+            >
+              {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+            </button>
+
+            {/* Multiply button */}
+            <button
+              onClick={(e) => { e.stopPropagation(); multiplyOpen ? onCloseMultiply() : onOpenMultiply(); }}
+              className={`flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border transition-all whitespace-nowrap ${
+                multiplyOpen
+                  ? "bg-red-700 border-red-600 text-white"
+                  : "bg-[#cc181e] hover:bg-red-600 border-red-700 text-white"
+              }`}
+            >
+              Multiply
+            </button>
+
+            {/* Link to short */}
+            <a
+              href={shortUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-1 text-[#555] hover:text-sky-400 transition-colors"
+              title="Open Short"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+          </div>
+        </td>
+      </tr>
+
+      {/* Expanded panel — Original Title + AI Titles */}
+      {expanded && (
+        <tr className="border-b border-[#181818]">
+          <td colSpan={COLS} className="p-0">
+            <div className="bg-[#0A0A0A] border-t border-[#1C1C1C] px-5 py-4">
+              <div className="flex gap-5">
+
+                {/* Thumbnail + watch link */}
+                <div className="flex-shrink-0 flex flex-col items-center gap-2">
+                  <img
+                    src={thumbUrl(short.thumbnail, short.video_id)}
+                    alt=""
+                    className="w-28 h-16 rounded-xl object-cover ring-1 ring-white/10"
+                  />
+                  <a
+                    href={shortUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 text-[10px] text-[#555] hover:text-sky-400 transition-colors"
+                  >
+                    <Play className="w-2.5 h-2.5" /> Watch Short
+                  </a>
                 </div>
-                <div className="text-[10px]">
-                  <span className="text-[#444]">Score: </span>
-                  <span className="text-amber-400 font-bold">{(short.velocity_score || 0).toFixed(1)}</span>
+
+                {/* Original Title */}
+                <div className="w-64 flex-shrink-0">
+                  <p className="text-[10px] text-[#444] uppercase tracking-widest font-semibold mb-2">Original Title</p>
+                  <div className="bg-[#111] rounded-xl border border-[#1C1C1C] px-3 py-2.5">
+                    <p className="text-[12px] text-[#aaa] leading-relaxed">{short.title}</p>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2 text-[10px] text-[#555]">
+                    <span>{fmt(short.views_last_check)} views</span>
+                    <span>·</span>
+                    <span className="text-red-400">+{fmt(short.views_delta)} / 24h</span>
+                  </div>
                 </div>
+
+                {/* New / AI Titles */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-3.5 h-3.5 text-violet-400" />
+                      <p className="text-[10px] text-[#444] uppercase tracking-widest font-semibold">New Titles (AI)</p>
+                      {short.ai_titles.length > 0 && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-400 border border-violet-500/25">
+                          {short.ai_titles.length}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      onClick={onGenerateTitles}
+                      disabled={generating}
+                      className="flex items-center gap-1.5 bg-violet-600/20 hover:bg-violet-600/35 text-violet-400 text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-violet-500/25 transition-colors disabled:opacity-40"
+                    >
+                      {generating
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : <RefreshCw className="w-3 h-3" />}
+                      {short.ai_titles.length > 0 ? "Regenerate" : "Generate 5 Titles"}
+                    </button>
+                  </div>
+
+                  {short.ai_titles.length === 0 ? (
+                    <p className="text-[11px] text-[#444] italic px-1">
+                      Click "Generate 5 Titles" to create niche-aware AI titles for this short.
+                    </p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {short.ai_titles.map((t, i) => (
+                        <div
+                          key={t.id}
+                          className="flex items-start gap-2.5 bg-[#111] rounded-lg px-3 py-2 border border-[#1C1C1C] hover:border-violet-500/20 transition-colors"
+                        >
+                          <span className="text-[10px] text-violet-400 font-bold flex-shrink-0 mt-0.5 w-5 tabular-nums">
+                            #{i + 1}
+                          </span>
+                          <p className="text-[12px] text-[#ccc] flex-1 leading-relaxed">{t.title}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
               </div>
             </div>
+          </td>
+        </tr>
+      )}
 
-            <div className="col-span-2">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-[10px] text-[#444] uppercase tracking-wider">AI Generated Titles</p>
+      {/* Inline Multiply Panel */}
+      {multiplyOpen && (
+        <tr className="border-b border-[#1e1e1e]">
+          <td colSpan={COLS} className="p-0">
+            <div className="bg-[#0D0D0D] border-t border-[#1e1e1e] px-6 py-4 space-y-4">
+
+              {/* Close button */}
+              <div className="flex justify-end">
                 <button
-                  onClick={onGenerateTitles} disabled={generating}
-                  className="text-[10px] text-violet-400 hover:text-violet-300 flex items-center gap-1 disabled:opacity-40"
+                  onClick={onCloseMultiply}
+                  className="p-1 text-[#555] hover:text-white transition-colors rounded-md hover:bg-white/5"
                 >
-                  {generating ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                  {short.ai_titles.length > 0 ? "Regenerate" : "Generate 5 Titles"}
+                  <X className="w-4 h-4" />
                 </button>
               </div>
-              {short.ai_titles.length === 0 ? (
-                <p className="text-[11px] text-[#555] italic">Click generate to create niche-aware AI titles</p>
-              ) : (
-                <div className="space-y-1">
-                  {short.ai_titles.map((t, i) => (
-                    <div key={t.id} className="flex items-start gap-2 bg-[#0A0A0A] rounded-lg px-3 py-1.5 border border-[#1A1A1A]">
-                      <span className="text-[10px] text-violet-400 font-bold flex-shrink-0 mt-0.5">#{i + 1}</span>
-                      <p className="text-[11px] text-[#ccc]">{t.title}</p>
+
+              {/* Sliders */}
+              <div className="flex items-end gap-8">
+                <div className="flex-1">
+                  <div className="flex justify-between items-center mb-1.5">
+                    <span className="text-xs text-[#777]">Channels per video</span>
+                    <span className="text-sm font-bold text-white">{nChannels}</span>
+                  </div>
+                  <SliderTrack value={nChannels} min={1} max={30} onChange={setNChannels}
+                    labels={["1", "5", "10", "15", "20", "25", "30"]} />
+                </div>
+                <div className="flex-1">
+                  <div className="flex justify-between items-center mb-1.5">
+                    <span className="text-xs text-[#777]">Gap between uploads</span>
+                    <span className="text-sm font-bold text-white">{gapHours}h</span>
+                  </div>
+                  <SliderTrack value={gapHours} min={0} max={12} step={0.5} onChange={setGapHours}
+                    labels={["0h", "3h", "6h", "9h", "12h"]} />
+                </div>
+              </div>
+
+              {/* Upload progress — shows which video is being multiplied */}
+              {multiplying && multiplyProgress && (
+                <div className="bg-[#0A0A0A] border border-red-500/20 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={thumbUrl(short.thumbnail, short.video_id)}
+                      alt=""
+                      className="w-14 h-9 rounded-lg object-cover flex-shrink-0 ring-1 ring-red-500/30"
+                    />
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          <Loader2 className="w-3.5 h-3.5 text-red-400 animate-spin" />
+                          <span className="text-[12px] text-white font-medium">Multiplying: <span className="text-red-400">{short.title.slice(0, 40)}{short.title.length > 40 ? "…" : ""}</span></span>
+                        </div>
+                        <span className="text-[12px] font-bold tabular-nums text-red-400">
+                          {multiplyProgress.completed} / {multiplyProgress.total}
+                        </span>
+                      </div>
+                      <div className="w-full h-2 bg-[#1C1C1C] rounded-full overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all duration-500"
+                          style={{
+                            width: `${multiplyProgress.total > 0 ? (multiplyProgress.completed / multiplyProgress.total) * 100 : 0}%`,
+                            background: "linear-gradient(90deg, #cc181e, #ef4444)",
+                          }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-[#555] mt-1">
+                        <span>{Math.round(multiplyProgress.total > 0 ? (multiplyProgress.completed / multiplyProgress.total) * 100 : 0)}% complete</span>
+                        <span className="flex items-center gap-3">
+                          <span className="text-emerald-400">{multiplyProgress.completed - multiplyProgress.errors} sent</span>
+                          {multiplyProgress.errors > 0 && <span className="text-red-400">{multiplyProgress.errors} failed</span>}
+                          <span>{multiplyProgress.total - multiplyProgress.completed} remaining</span>
+                        </span>
+                      </div>
                     </div>
-                  ))}
+                  </div>
                 </div>
               )}
+
+              {/* Result */}
+              {multiplyResult && !multiplying && (
+                <div className={`rounded-xl p-3 text-[12px] border ${
+                  multiplyResult.total_errors === 0
+                    ? "bg-emerald-950/30 border-emerald-800/30 text-emerald-400"
+                    : "bg-amber-950/30 border-amber-800/30 text-amber-400"
+                }`}>
+                  <p className="font-bold mb-1">Done — {multiplyResult.total_sent} sent, {multiplyResult.total_errors} errors</p>
+                  {multiplyResult.results?.length > 0 && (
+                    <div className="space-y-0.5 max-h-24 overflow-y-auto">
+                      {multiplyResult.results.map((r: any, i: number) => (
+                        <div key={i} className="flex items-center gap-2 text-[11px] text-[#aaa]">
+                          <Check className="w-2.5 h-2.5 text-emerald-400 flex-shrink-0" />
+                          <span className="truncate">{r.channel} — {r.title_used}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Multiply button */}
+              <button
+                onClick={onMultiply}
+                disabled={multiplying}
+                className="w-full flex items-center justify-center gap-2 disabled:opacity-50 text-white font-semibold text-sm py-3 rounded-xl transition-all"
+                style={{ backgroundColor: "#cc181e" }}
+                onMouseEnter={(e) => { if (!multiplying) (e.currentTarget as HTMLButtonElement).style.backgroundColor = "#e01e25"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "#cc181e"; }}
+              >
+                {multiplying ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Multiplying — sending to n8n...</>
+                ) : (
+                  <>Multiply × {nChannels} channels</>
+                )}
+              </button>
             </div>
-          </div>
-        </div>
+          </td>
+        </tr>
       )}
-    </div>
+    </>
   );
 }
 
@@ -381,69 +604,32 @@ function MultipliedVideosTab() {
 
   return (
     <div className="space-y-5">
-      {/* Page header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-white font-bold text-lg">Multiplied Content Tracker</h3>
-          <p className="text-[11px] text-[#555] mt-0.5">Monitor reposted content performance and incremental reach</p>
-        </div>
-        <div className="flex items-center gap-3">
-          {lastUpdated && (
-            <span className="text-[10px] text-[#444]">
-              Stats updated {fmtTime(lastUpdated)}
-            </span>
-          )}
-          <button
-            onClick={handleRefreshStats}
-            disabled={refreshingStats}
-            className="flex items-center gap-1.5 text-[11px] text-sky-500 hover:text-sky-400 transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3 h-3 ${refreshingStats ? "animate-spin" : ""}`} />
-            {refreshingStats ? "Refreshing..." : "Refresh Stats"}
-          </button>
-          <button
-            onClick={() => { setLoading(true); fetchVideos(); }}
-            className="flex items-center gap-1.5 text-[11px] text-[#666] hover:text-white transition-colors"
-          >
-            <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> Reload
-          </button>
-        </div>
+      {/* Refresh controls */}
+      <div className="flex items-center justify-end gap-3">
+        {lastUpdated && (
+          <span className="text-[10px] text-[#444]">Stats updated {fmtTime(lastUpdated)}</span>
+        )}
+        <button
+          onClick={handleRefreshStats}
+          disabled={refreshingStats}
+          className="flex items-center gap-1.5 text-[11px] text-sky-500 hover:text-sky-400 transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={`w-3 h-3 ${refreshingStats ? "animate-spin" : ""}`} />
+          {refreshingStats ? "Refreshing..." : "Refresh Stats"}
+        </button>
+        <button
+          onClick={() => { setLoading(true); fetchVideos(); }}
+          className="flex items-center gap-1.5 text-[11px] text-[#666] hover:text-white transition-colors"
+        >
+          <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> Reload
+        </button>
       </div>
 
       {/* Summary stat cards */}
-      <div className="grid grid-cols-4 gap-3">
-        {[
-          {
-            label: "REPOST VIEWS", value: hasRealStats ? fmt(totalUploadedViews) : fmt(totalOriginalViews),
-            sub: hasRealStats ? "Real views from uploads" : "Original source views (no uploads tracked yet)",
-            icon: <Eye className="w-5 h-5 text-emerald-400" />,
-            bg: "bg-emerald-500/8 border-emerald-500/15",
-          },
-          {
-            label: "ACTIVE CAMPAIGNS", value: String(videos.length), sub: `${videos.length} total`,
-            icon: <Activity className="w-5 h-5 text-amber-400" />,
-            bg: "bg-amber-500/8 border-amber-500/15",
-          },
-          {
-            label: "AVG MULTIPLIER", value: `${avgMultiplier}x`, sub: "Channels per video avg",
-            icon: <Zap className="w-5 h-5 text-orange-400" />,
-            bg: "bg-orange-500/8 border-orange-500/15",
-          },
-          {
-            label: "CHANNELS DEPLOYED", value: String(totalChannelsDeployed), sub: "Total channel uploads",
-            icon: <TrendingUp className="w-5 h-5 text-sky-400" />,
-            bg: "bg-sky-500/8 border-sky-500/15",
-          },
-        ].map((s) => (
-          <div key={s.label} className={`${s.bg} border rounded-2xl px-5 py-4 flex items-center gap-4`}>
-            <div className="p-2.5 rounded-xl bg-white/5 flex-shrink-0">{s.icon}</div>
-            <div>
-              <p className="text-[10px] uppercase tracking-widest text-[#555] font-medium">{s.label}</p>
-              <p className="text-2xl font-black text-white tabular-nums leading-tight mt-0.5">{s.value}</p>
-              <p className="text-[10px] text-[#444] mt-0.5">{s.sub}</p>
-            </div>
-          </div>
-        ))}
+      <div className="grid grid-cols-3 gap-3">
+        <StatCard value={String(videos.length)} label="Videos Multiplied" sub="total reposted videos" variant="grey" />
+        <StatCard value={hasRealStats ? fmt(totalUploadedViews) : "—"} label="Repost Views" sub="views across all reposts" variant="grey" />
+        <StatCard value={String(totalChannelsDeployed)} label="No. of Uploads" sub="total channel uploads" variant="grey" />
       </div>
 
       {loading ? (
@@ -457,129 +643,132 @@ function MultipliedVideosTab() {
           <p className="text-[#333] text-xs mt-1">Select shorts and hit Multiply to start</p>
         </div>
       ) : (
-        <div className="space-y-3">
-          {videos.map((v) => {
-            const daysAgo = v.channels[0]?.sent_at
-              ? Math.floor((Date.now() - new Date(v.channels[0].sent_at).getTime()) / 86400000)
-              : 0;
-            const sentDate = v.channels[0]?.sent_at
-              ? new Date(v.channels[0].sent_at).toLocaleDateString([], { year: "numeric", month: "2-digit", day: "2-digit" })
-              : "—";
-            // Use real uploaded views if available, else show 0 (honest — no fake numbers)
-            const repostViews = v.total_uploaded_views || 0;
-            const incrementalViews = Math.max(0, repostViews - v.original_views);
-            const hasStats = repostViews > 0;
-            const multiplierFloat = v.multiplier;
-
-            const isExpanded = expandedChannels.has(v.video_id);
-            return (
-              <div key={v.video_id} className="bg-[#111] border border-[#1C1C1C] rounded-2xl overflow-hidden hover:border-[#2A2A2A] transition-all">
-                {/* Main row */}
-                <div className="flex items-center gap-6 px-6 py-5">
-                  {/* Left: status + meta */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-2 flex-wrap">
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">Active</span>
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/25">YouTube</span>
-                      <span className="text-[11px] text-[#555]">YT Multiplier</span>
-                    </div>
-                    <a href={v.original_url} target="_blank" rel="noreferrer"
-                      className="text-white font-semibold text-[14px] leading-snug hover:text-red-400 transition-colors flex items-start gap-1.5 group">
-                      <span className="truncate">{v.title}</span>
-                      <ExternalLink className="w-3 h-3 mt-0.5 flex-shrink-0 opacity-0 group-hover:opacity-40 transition-opacity" />
-                    </a>
-                    <p className="text-[11px] text-[#444] mt-1">
-                      {daysAgo} day{daysAgo !== 1 ? "s" : ""} ago &middot; Started {sentDate}
-                    </p>
-                  </div>
-
-                  {/* Stats columns */}
-                  <div className="flex items-center gap-6 flex-shrink-0">
-                    {/* Original */}
-                    <div className="text-center min-w-[60px]">
-                      <p className="text-[9px] uppercase tracking-widest text-[#555] font-medium mb-1">Original</p>
-                      <p className="text-[15px] font-bold text-white tabular-nums">{fmt(v.original_views)}</p>
-                    </div>
-                    {/* Repost Views */}
-                    <div className="text-center min-w-[72px]">
-                      <p className="text-[9px] uppercase tracking-widest text-[#555] font-medium mb-1">Repost Views</p>
-                      {hasStats
-                        ? <p className="text-[15px] font-bold text-sky-400 tabular-nums">{fmt(repostViews)}</p>
-                        : <p className="text-[13px] text-[#333] tabular-nums">—</p>}
-                    </div>
-                    {/* Incremental */}
-                    <div className="text-center min-w-[72px]">
-                      <p className="text-[9px] uppercase tracking-widest text-[#555] font-medium mb-1">Incremental</p>
-                      {hasStats
-                        ? <p className="text-[15px] font-bold text-emerald-400 tabular-nums">+{fmt(incrementalViews)}</p>
-                        : <p className="text-[13px] text-[#333] tabular-nums">—</p>}
-                    </div>
-                    {/* Multiplier */}
-                    <div className="text-center min-w-[56px]">
-                      <p className="text-[9px] uppercase tracking-widest text-[#555] font-medium mb-1">Multiplier</p>
-                      <p className="text-[15px] font-bold text-orange-400 tabular-nums">{multiplierFloat}x</p>
-                    </div>
-                    {/* Channels — expandable */}
-                    <div className="text-center min-w-[80px]">
-                      <p className="text-[9px] uppercase tracking-widest text-[#555] font-medium mb-1">Channels</p>
-                      <button
-                        onClick={() => setExpandedChannels((prev) => {
-                          const next = new Set(prev);
-                          next.has(v.video_id) ? next.delete(v.video_id) : next.add(v.video_id);
-                          return next;
-                        })}
-                        className="flex items-center gap-1 justify-center text-violet-400 hover:text-violet-300 transition-colors mx-auto"
-                      >
-                        <span className="text-[13px] font-bold tabular-nums">{v.channels.length}</span>
-                        {isExpanded
-                          ? <ChevronDown className="w-3 h-3" />
-                          : <ChevronRight className="w-3 h-3" />}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Multiply button */}
-                  <button
-                    onClick={() => { setModalVideo(v); setMoreChannels(3); }}
-                    className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 text-white text-[12px] font-semibold px-4 py-2.5 rounded-xl transition-all flex-shrink-0"
-                  >
-                    <Rocket className="w-3.5 h-3.5" /> + Multiply
-                  </button>
-                </div>
-
-                {/* Expandable channel list */}
-                {isExpanded && (
-                  <div className="border-t border-[#1A1A1A] px-6 py-3 space-y-2">
-                    <p className="text-[9px] uppercase tracking-widest text-[#444] font-medium mb-2">Uploaded to these channels</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      {v.channels.map((ch) => {
-                        const mapped = CHANNEL_MAP[ch.channel_number];
-                        return (
-                          <a
-                            key={ch.channel_number}
-                            href={mapped?.url || "#"}
-                            target="_blank" rel="noreferrer"
-                            className="flex items-center gap-2.5 bg-[#0D0D0D] hover:bg-[#161616] border border-[#1C1C1C] hover:border-violet-500/30 rounded-xl px-3 py-2.5 transition-all group"
-                          >
-                            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-violet-600 to-purple-800 flex items-center justify-center text-[10px] text-white font-bold flex-shrink-0">
-                              {ch.channel_number}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-[12px] text-white font-medium truncate group-hover:text-violet-400 transition-colors">
-                                {mapped?.name || ch.channel_name || `YT${ch.channel_number}`}
-                              </p>
-                              <p className="text-[10px] text-[#444]">{fmtTime(ch.sent_at)}</p>
-                            </div>
-                            <ExternalLink className="w-3 h-3 text-[#444] group-hover:text-violet-400 transition-colors flex-shrink-0" />
+        <div className="bg-[#111] border border-[#1C1C1C] rounded-2xl overflow-hidden">
+          <table className="w-full text-left border-collapse table-fixed">
+            <thead>
+              <tr className="border-b border-[#222] bg-[#0D0D0D]">
+                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-widest text-[#ccc] w-[28%]">Video</th>
+                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-widest text-[#ccc] w-[12%]">Original Views</th>
+                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-widest text-[#ccc] w-[12%]">Repost Views</th>
+                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-widest text-[#ccc] w-[10%]">Multiplier</th>
+                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-widest text-[#ccc] w-[24%]">Target Channels</th>
+                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-widest text-[#ccc] w-[14%]">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {videos.map((v) => {
+                const repostViews = v.total_uploaded_views || 0;
+                const hasStats = repostViews > 0;
+                const isExpanded = expandedChannels.has(v.video_id);
+                const PILL_LIMIT = 2;
+                const visibleChannels = v.channels.slice(0, PILL_LIMIT);
+                const hiddenCount = v.channels.length - PILL_LIMIT;
+                const toggleExpand = () => setExpandedChannels((prev) => {
+                  const next = new Set(prev);
+                  next.has(v.video_id) ? next.delete(v.video_id) : next.add(v.video_id);
+                  return next;
+                });
+                return (
+                  <>
+                    <tr key={v.video_id} className="border-b border-[#1a1a1a] hover:bg-white/[0.02] transition-colors">
+                      {/* Video */}
+                      <td className="px-5 py-4 align-middle">
+                        <div className="flex items-center gap-3">
+                          <img src={thumbUrl(v.thumbnail, v.video_id)} alt="" className="w-14 h-9 rounded-lg object-cover flex-shrink-0 ring-1 ring-white/5" />
+                          <a href={v.original_url} target="_blank" rel="noreferrer"
+                            className="text-[13px] font-semibold text-white hover:text-red-400 transition-colors line-clamp-2 leading-snug">
+                            {v.title}
                           </a>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                        </div>
+                      </td>
+                      {/* Original Views */}
+                      <td className="px-5 py-4 align-middle">
+                        <span className="text-[14px] font-bold text-white tabular-nums">{fmt(v.original_views)}</span>
+                      </td>
+                      {/* Repost Views */}
+                      <td className="px-5 py-4 align-middle">
+                        {hasStats
+                          ? <span className="text-[14px] font-bold text-sky-400 tabular-nums">{fmt(repostViews)}</span>
+                          : <span className="text-[13px] text-[#333]">—</span>}
+                      </td>
+                      {/* Multiplier */}
+                      <td className="px-5 py-4 align-middle">
+                        <span className="text-[14px] font-bold text-orange-400 tabular-nums">{v.multiplier}x</span>
+                      </td>
+                      {/* Channels — pills + expand */}
+                      <td className="px-5 py-4 align-middle">
+                        <div className="flex items-center gap-1 flex-nowrap overflow-hidden">
+                          {visibleChannels.map((ch) => {
+                            const mapped = CHANNEL_MAP[ch.channel_number];
+                            const name = mapped?.name || ch.channel_name || `YT${ch.channel_number}`;
+                            const label = name.length > 9 ? name.slice(0, 9) + "…" : name;
+                            return (
+                              <span key={ch.channel_number} className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-white/10 text-white border border-white/20 whitespace-nowrap flex-shrink-0">
+                                <span className="w-3.5 h-3.5 rounded-full bg-white/20 flex items-center justify-center text-[7px] text-white font-bold flex-shrink-0">{ch.channel_number}</span>
+                                {label}
+                              </span>
+                            );
+                          })}
+                          {hiddenCount > 0 && (
+                            <button
+                              onClick={toggleExpand}
+                              className="inline-flex items-center gap-0.5 text-[10px] font-medium px-2 py-0.5 rounded-full bg-white/5 text-[#aaa] border border-[#333] hover:text-white hover:border-[#555] transition-colors whitespace-nowrap flex-shrink-0"
+                            >
+                              +{hiddenCount}
+                              {isExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
+                            </button>
+                          )}
+                          {hiddenCount <= 0 && v.channels.length > 0 && (
+                            <button onClick={toggleExpand} className="text-[#555] hover:text-[#888] transition-colors flex-shrink-0 ml-0.5">
+                              {isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                      {/* Actions */}
+                      <td className="px-5 py-4 align-middle">
+                        <button
+                          onClick={() => { setModalVideo(v); setMoreChannels(3); }}
+                          className="text-[11px] font-semibold px-3 py-1.5 rounded-lg border transition-all whitespace-nowrap text-white border-red-700"
+                          style={{ backgroundColor: "#cc181e" }}
+                          onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "#e01e25"; }}
+                          onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "#cc181e"; }}
+                        >
+                          + Multiply
+                        </button>
+                      </td>
+                    </tr>
+
+                    {/* Expanded channel detail */}
+                    {isExpanded && (
+                      <tr className="border-b border-[#1a1a1a]">
+                        <td colSpan={6} className="px-5 py-4 bg-[#0A0A0A]">
+                          <p className="text-[10px] uppercase tracking-widest text-[#555] font-semibold mb-3">Uploaded to {v.channels.length} channels</p>
+                          <div className="grid grid-cols-4 gap-2">
+                            {v.channels.map((ch) => {
+                              const mapped = CHANNEL_MAP[ch.channel_number];
+                              const name = mapped?.name || ch.channel_name || `YT${ch.channel_number}`;
+                              return (
+                                <div key={ch.channel_number} className="flex items-center gap-2.5 bg-[#111] border border-[#1C1C1C] rounded-xl px-3 py-2.5">
+                                  <div className="w-7 h-7 rounded-full bg-white/15 border border-white/20 flex items-center justify-center text-[10px] text-white font-bold flex-shrink-0">
+                                    {ch.channel_number}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-[12px] text-white font-semibold truncate">{name}</p>
+                                    <p className="text-[10px] text-[#555] mt-0.5">{fmtTime(ch.sent_at)}</p>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
 
@@ -769,23 +958,11 @@ function UploadLogTab() {
     <div className="space-y-5">
       {/* Summary Stats */}
       {summary && (
-        <div className="grid grid-cols-6 gap-3">
-          {[
-            { label: "Total Uploads", value: String(summary.total_uploads), icon: Upload, color: "text-white", bg: "bg-white/5" },
-            { label: "Sent", value: String(summary.sent), icon: CircleCheck, color: "text-emerald-400", bg: "bg-emerald-500/5" },
-            { label: "Failed", value: String(summary.failed), icon: CircleX, color: "text-red-400", bg: "bg-red-500/5" },
-            { label: "Videos", value: String(summary.unique_videos), icon: Video, color: "text-sky-400", bg: "bg-sky-500/5" },
-            { label: "Channels", value: String(summary.unique_channels), icon: Hash, color: "text-violet-400", bg: "bg-violet-500/5" },
-            { label: "Data Sent", value: `${summary.total_data_sent_mb} MB`, icon: Database, color: "text-amber-400", bg: "bg-amber-500/5" },
-          ].map((s) => (
-            <div key={s.label} className={`${s.bg} border border-[#1C1C1C] rounded-xl px-3 py-3`}>
-              <div className="flex items-center gap-1.5 mb-1">
-                <s.icon className={`w-3 h-3 ${s.color}`} />
-                <p className="text-[10px] uppercase tracking-wide text-[#444]">{s.label}</p>
-              </div>
-              <p className={`text-lg font-bold tabular-nums ${s.color}`}>{s.value}</p>
-            </div>
-          ))}
+        <div className="grid grid-cols-4 gap-3">
+          <StatCard value={String(summary.total_uploads)} label="Total Uploads" sub="all upload attempts" variant="grey" />
+          <StatCard value={String(summary.sent)} label="Sent" sub="successfully delivered" variant="grey" />
+          <StatCard value={String(summary.failed)} label="Failed" sub="errors encountered" variant="grey" />
+          <StatCard value={String(summary.unique_channels)} label="Total Channels" sub="channels used" variant="grey" />
         </div>
       )}
 
@@ -856,15 +1033,12 @@ function UploadLogTab() {
                 <div className="border-t border-[#1A1A1A]">
                   <table className="w-full text-[12px]">
                     <thead>
-                      <tr className="text-[10px] uppercase tracking-wider text-[#444] border-b border-[#1A1A1A]">
-                        <th className="w-10 px-3 py-2"></th>
-                        <th className="text-left px-3 py-2 font-medium">Channel</th>
-                        <th className="text-left px-3 py-2 font-medium">New Title</th>
-                        <th className="text-left px-3 py-2 font-medium">Status</th>
-                        <th className="text-right px-3 py-2 font-medium">Size</th>
-                        <th className="text-left px-3 py-2 font-medium">ffmpeg</th>
-                        <th className="text-left px-3 py-2 font-medium">Scheduled</th>
-                        <th className="text-left px-5 py-2 font-medium">Sent At</th>
+                      <tr className="text-[10px] uppercase tracking-wider text-[#ccc] border-b border-[#1A1A1A] bg-[#0D0D0D] font-semibold">
+                        <th className="text-left px-4 py-3 w-[28%]">Channel</th>
+                        <th className="text-left px-4 py-3 w-[34%]">New Title</th>
+                        <th className="text-left px-4 py-3 w-[12%]">Status</th>
+                        <th className="text-left px-4 py-3 w-[13%]">Request Sent</th>
+                        <th className="text-left px-4 py-3 w-[13%]">Sent At</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -874,21 +1048,18 @@ function UploadLogTab() {
                           onClick={() => setExpandedLog(expandedLog === log.id ? null : log.id)}
                           className="border-b border-[#141414] hover:bg-white/[0.02] cursor-pointer transition-colors"
                         >
-                          <td className="px-3 py-2.5">
-                            <img src={thumbUrl(log.thumbnail, log.video_id)} alt="" className="w-10 h-7 rounded-md object-cover ring-1 ring-white/5" />
-                          </td>
-                          <td className="px-3 py-2.5">
+                          <td className="px-4 py-3 align-middle">
                             <div className="flex items-center gap-2">
-                              <div className="w-6 h-6 rounded-full bg-gradient-to-br from-violet-600 to-purple-800 flex items-center justify-center text-[9px] text-white font-bold flex-shrink-0">
+                              <div className="w-6 h-6 rounded-full bg-white/15 border border-white/20 flex items-center justify-center text-[9px] text-white font-bold flex-shrink-0">
                                 {log.channel_number}
                               </div>
-                              <span className="text-white font-medium truncate max-w-[140px]">{log.channel_name}</span>
+                              <span className="text-[13px] text-white font-medium truncate max-w-[150px]">{log.channel_name}</span>
                             </div>
                           </td>
-                          <td className="px-3 py-2.5">
-                            <p className="text-[#aaa] truncate max-w-[200px]">{log.new_title}</p>
+                          <td className="px-4 py-3 align-middle">
+                            <p className="text-[12px] text-[#aaa] truncate max-w-[240px]">{log.new_title}</p>
                           </td>
-                          <td className="px-3 py-2.5">
+                          <td className="px-4 py-3 align-middle">
                             {log.status === "sent" ? (
                               <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
                                 <CircleCheck className="w-2.5 h-2.5" /> Sent
@@ -899,18 +1070,8 @@ function UploadLogTab() {
                               </span>
                             )}
                           </td>
-                          <td className="px-3 py-2.5 text-right text-[#666] tabular-nums">
-                            {fmtSize(log.file_size_bytes)}
-                          </td>
-                          <td className="px-3 py-2.5">
-                            {log.video_processed ? (
-                              <span className="text-emerald-400 text-[10px]">Yes</span>
-                            ) : (
-                              <span className="text-[#444] text-[10px]">No</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2.5 text-[#666]">{fmtTime(log.scheduled_at)}</td>
-                          <td className="px-5 py-2.5 text-[#555]">{fmtTime(log.created_at)}</td>
+                          <td className="px-4 py-3 align-middle text-[11px] text-[#666] tabular-nums">{fmtTime(log.scheduled_at)}</td>
+                          <td className="px-4 py-3 align-middle text-[11px] text-[#555] tabular-nums">{fmtTime(log.created_at)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -982,6 +1143,7 @@ export default function MultiplierRoomPage() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [multiplyOpenFor, setMultiplyOpenFor] = useState<string | null>(null);
   const [generating, setGenerating] = useState<Set<string>>(new Set());
   const [generatingAll, setGeneratingAll] = useState(false);
 
@@ -989,15 +1151,20 @@ export default function MultiplierRoomPage() {
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 15;
 
-  // Multiply config
-  const [showMultiply, setShowMultiply] = useState(false);
+  // Per-row multiply config (shared sliders, one panel open at a time)
   const [nChannels, setNChannels] = useState(5);
   const [gapHours, setGapHours] = useState(2);
   const [processVideo, setProcessVideo] = useState(true);
   const [usePeakHours, setUsePeakHours] = useState(true);
+  // Per-video multiply state (keyed by video_id)
+  const [multiplyingFor, setMultiplyingFor] = useState<string | null>(null);
+  const [multiplyProgressFor, setMultiplyProgressFor] = useState<Record<string, { completed: number; total: number; errors: number }>>({});
+  const [multiplyResultFor, setMultiplyResultFor] = useState<Record<string, any>>({});
+  // Legacy bulk multiply state (kept for "Multiply (N)" top button)
   const [multiplying, setMultiplying] = useState(false);
   const [multiplyResult, setMultiplyResult] = useState<any>(null);
   const [multiplyProgress, setMultiplyProgress] = useState<{ completed: number; total: number; errors: number } | null>(null);
+  const [showMultiply, setShowMultiply] = useState(false);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -1049,6 +1216,48 @@ export default function MultiplierRoomPage() {
       setTimeout(() => clearInterval(poll), 60000);
     } catch (e: any) { error(e.message); }
     finally { setGeneratingAll(false); }
+  };
+
+  const handleMultiplySingle = async (videoId: string) => {
+    setMultiplyingFor(videoId);
+    setMultiplyResultFor((prev) => ({ ...prev, [videoId]: null }));
+    try {
+      const res = await fetch(`${API}/upload/multiply-via-webhook`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          video_ids: [videoId],
+          n_channels: nChannels,
+          gap_hours: gapHours,
+          process_video: processVideo,
+          use_peak_hours: usePeakHours,
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.detail || "Failed");
+      if (d.total_webhooks === 0) { setMultiplyingFor(null); return; }
+      success(`Multiplying! Sending ${d.total_webhooks} uploads to n8n...`);
+      setMultiplyProgressFor((prev) => ({ ...prev, [videoId]: { completed: 0, total: d.total_webhooks, errors: 0 } }));
+      const poll = async () => {
+        try {
+          const st = await fetch(`${API}/upload/multiply-via-webhook/status`).then((r) => r.json());
+          if (st.progress?.total_jobs) {
+            setMultiplyProgressFor((prev) => ({
+              ...prev,
+              [videoId]: { completed: st.progress.completed || 0, total: st.progress.total_jobs, errors: st.progress.errors || 0 },
+            }));
+          }
+          if (st.running) { setTimeout(poll, 2000); }
+          else {
+            setMultiplyingFor(null);
+            setMultiplyResultFor((prev) => ({ ...prev, [videoId]: st.last_result }));
+            if (st.last_result) success(`Done: ${st.last_result.total_sent} sent, ${st.last_result.total_errors} errors`);
+            await fetchAll();
+          }
+        } catch { setMultiplyingFor(null); }
+      };
+      setTimeout(poll, 3000);
+    } catch (e: any) { error(e.message); setMultiplyingFor(null); }
   };
 
   const handleMultiply = async () => {
@@ -1110,11 +1319,6 @@ export default function MultiplierRoomPage() {
     } catch (e: any) { error(e.message); setMultiplying(false); }
   };
 
-  const totalDelta = shorts.reduce((a, s) => a + (s.views_delta || 0), 0);
-  const totalViews = shorts.reduce((a, s) => a + (s.views_last_check || 0), 0);
-  const withTitles = shorts.filter((s) => s.ai_titles.length > 0).length;
-  const avgVelocity = shorts.length > 0 ? shorts.reduce((a, s) => a + (s.velocity_score || 0), 0) / shorts.length : 0;
-  const accelerating = shorts.filter((s) => s.trend === "accelerating").length;
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(shorts.length / PAGE_SIZE));
@@ -1135,65 +1339,75 @@ export default function MultiplierRoomPage() {
         <div className="flex items-center gap-2">
           {subTab === "shorts" && (
             <>
-              <RainbowButton
+              <button
                 onClick={handleGenerateAll}
                 disabled={generatingAll || shorts.length === 0}
-                className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-2 h-auto"
+                className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-2 rounded-lg border border-[#3a3a3a] text-white transition-all disabled:opacity-40"
+                style={{ background: "linear-gradient(to bottom, #2a2a2a, #161616)" }}
+                onMouseEnter={(e) => { if (!generatingAll) (e.currentTarget as HTMLButtonElement).style.background = "linear-gradient(to bottom, #333, #1e1e1e)"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "linear-gradient(to bottom, #2a2a2a, #161616)"; }}
               >
                 {generatingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
                 Generate All Titles
-              </RainbowButton>
-              <RainbowButton
+              </button>
+              <button
                 onClick={() => setShowMultiply(!showMultiply)}
                 disabled={selected.size === 0}
-                className="flex items-center gap-1.5 text-[12px] font-semibold px-4 py-2 h-auto"
+                className="flex items-center gap-1.5 text-[12px] font-semibold px-4 py-2 rounded-lg border border-red-700 text-white transition-all disabled:opacity-40"
+                style={{ backgroundColor: "#cc181e" }}
+                onMouseEnter={(e) => { if (selected.size > 0) (e.currentTarget as HTMLButtonElement).style.backgroundColor = "#e01e25"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "#cc181e"; }}
               >
-                <Rocket className="w-3.5 h-3.5" />
                 Multiply ({selected.size})
-              </RainbowButton>
+              </button>
             </>
           )}
         </div>
       </div>
 
-      {/* Sub-tabs */}
-      <div className="flex items-center gap-1 bg-[#0D0D0D] border border-[#1C1C1C] rounded-xl p-1 w-fit">
-        <button
-          onClick={() => setSubTab("shorts")}
-          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12px] font-medium transition-all ${
-            subTab === "shorts"
-              ? "bg-white/8 text-white shadow-sm"
-              : "text-[#666] hover:text-[#aaa]"
-          }`}
+      {/* Sub-tabs — centered */}
+      <div className="flex justify-center">
+        <div
+          className="flex items-center gap-1 rounded-xl p-1 w-fit"
+          style={{
+            background: "linear-gradient(to bottom, #2a2a2a, #161616)",
+            border: "1px solid #3a3a3a",
+          }}
         >
-          <Flame className="w-3.5 h-3.5" />
-          Viral Shorts
-          <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-            subTab === "shorts" ? "bg-red-500/20 text-red-400" : "bg-white/5 text-[#555]"
-          }`}>{shorts.length}</span>
-        </button>
-        <button
-          onClick={() => setSubTab("multiplied")}
-          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12px] font-medium transition-all ${
-            subTab === "multiplied"
-              ? "bg-white/8 text-white shadow-sm"
-              : "text-[#666] hover:text-[#aaa]"
-          }`}
-        >
-          <Rocket className="w-3.5 h-3.5" />
-          Multiplied
-        </button>
-        <button
-          onClick={() => setSubTab("logs")}
-          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12px] font-medium transition-all ${
-            subTab === "logs"
-              ? "bg-white/8 text-white shadow-sm"
-              : "text-[#666] hover:text-[#aaa]"
-          }`}
-        >
-          <FileText className="w-3.5 h-3.5" />
-          Upload Log
-        </button>
+          <button
+            onClick={() => setSubTab("shorts")}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12px] font-medium transition-all ${
+              subTab === "shorts"
+                ? "bg-white/10 text-white"
+                : "text-[#888] hover:text-[#ccc]"
+            }`}
+          >
+            <Flame className={`w-3.5 h-3.5 ${subTab === "shorts" ? "text-red-400" : "text-[#666]"}`} />
+            Picked Shorts
+          </button>
+          <button
+            onClick={() => setSubTab("multiplied")}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12px] font-medium transition-all ${
+              subTab === "multiplied"
+                ? "bg-white/10 text-white"
+                : "text-[#888] hover:text-[#ccc]"
+            }`}
+          >
+            <Rocket className={`w-3.5 h-3.5 ${subTab === "multiplied" ? "text-orange-400" : "text-[#666]"}`} />
+            Multiplied
+          </button>
+          <button
+            onClick={() => setSubTab("logs")}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12px] font-medium transition-all ${
+              subTab === "logs"
+                ? "bg-white/10 text-white"
+                : "text-[#888] hover:text-[#ccc]"
+            }`}
+          >
+            <FileText className={`w-3.5 h-3.5 ${subTab === "logs" ? "text-sky-400" : "text-[#666]"}`} />
+            Upload Log
+          </button>
+        </div>
       </div>
 
       {/* Multiplied Videos sub-tab */}
@@ -1204,25 +1418,6 @@ export default function MultiplierRoomPage() {
 
       {/* Viral Shorts sub-tab content */}
       {subTab === "shorts" && <>
-
-      {/* Stats row */}
-      <div className="grid grid-cols-5 gap-3">
-        {[
-          { label: "In Room", value: String(shorts.length), icon: Target, color: "text-white", bg: "bg-white/5" },
-          { label: "24h Delta", value: `+${fmt(totalDelta)}`, icon: TrendingUp, color: "text-red-400", bg: "bg-red-500/5" },
-          { label: "Avg Velocity", value: `${Math.round(avgVelocity)}x`, icon: Activity, color: "text-amber-400", bg: "bg-amber-500/5" },
-          { label: "Accelerating", value: String(accelerating), icon: Zap, color: "text-emerald-400", bg: "bg-emerald-500/5" },
-          { label: "AI Ready", value: `${withTitles}/${shorts.length}`, icon: Sparkles, color: "text-violet-400", bg: "bg-violet-500/5" },
-        ].map((s) => (
-          <div key={s.label} className={`${s.bg} border border-[#1C1C1C] rounded-xl px-4 py-3`}>
-            <div className="flex items-center gap-1.5 mb-1">
-              <s.icon className={`w-3 h-3 ${s.color}`} />
-              <p className="text-[10px] uppercase tracking-wide text-[#444]">{s.label}</p>
-            </div>
-            <p className={`text-xl font-bold tabular-nums ${s.color}`}>{s.value}</p>
-          </div>
-        ))}
-      </div>
 
       {/* Multiply Panel */}
       {showMultiply && selected.size > 0 && (
@@ -1432,18 +1627,46 @@ export default function MultiplierRoomPage() {
         </div>
       ) : (
         <>
-          <div className="space-y-2">
-            {paginatedShorts.map((s) => (
-              <ShortCard
-                key={s.video_id} short={s}
-                selected={selected.has(s.video_id)}
-                expanded={expanded.has(s.video_id)}
-                onSelect={() => toggleSelect(s.video_id)}
-                onExpand={() => toggleExpand(s.video_id)}
-                onGenerateTitles={() => handleGenerateTitles(s.video_id)}
-                generating={generating.has(s.video_id)}
-              />
-            ))}
+          {/* Table */}
+          <div className="bg-[#111] border border-[#1C1C1C] rounded-2xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-[#1C1C1C]">
+                  <th className="w-10 px-3 py-3"></th>
+                  <th className="px-3 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-white/50">Short</th>
+                  <th className="px-3 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-white/50">Channel</th>
+                  <th className="px-3 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-white/50">Total Views</th>
+                  <th className="px-3 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-white/50">24h Delta</th>
+                  <th className="px-3 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-white/50">Original Title</th>
+                  <th className="px-3 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-white/50">New Titles</th>
+                  <th className="px-3 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-white/50">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedShorts.map((s) => (
+                  <ShortCard
+                    key={s.video_id} short={s}
+                    selected={selected.has(s.video_id)}
+                    expanded={expanded.has(s.video_id)}
+                    onSelect={() => toggleSelect(s.video_id)}
+                    onExpand={() => toggleExpand(s.video_id)}
+                    onGenerateTitles={() => handleGenerateTitles(s.video_id)}
+                    generating={generating.has(s.video_id)}
+                    multiplyOpen={multiplyOpenFor === s.video_id}
+                    onOpenMultiply={() => setMultiplyOpenFor(s.video_id)}
+                    onCloseMultiply={() => setMultiplyOpenFor(null)}
+                    nChannels={nChannels} setNChannels={setNChannels}
+                    gapHours={gapHours} setGapHours={setGapHours}
+                    processVideo={processVideo} setProcessVideo={setProcessVideo}
+                    usePeakHours={usePeakHours} setUsePeakHours={setUsePeakHours}
+                    onMultiply={() => handleMultiplySingle(s.video_id)}
+                    multiplying={multiplyingFor === s.video_id}
+                    multiplyProgress={multiplyProgressFor[s.video_id] || null}
+                    multiplyResult={multiplyResultFor[s.video_id] || null}
+                  />
+                ))}
+              </tbody>
+            </table>
           </div>
 
           {/* Pagination */}

@@ -48,7 +48,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
       </p>
       <button
         onClick={onAdd}
-        className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2.5 rounded-xl transition-colors"
+        className="flex items-center gap-2 bg-[#cc181e] hover:bg-[#b01419] text-white text-sm font-medium px-4 py-2.5 rounded-xl transition-colors"
       >
         <Plus className="w-4 h-4" /> Connect First Channel
       </button>
@@ -149,7 +149,7 @@ export default function TargetChannelsPage() {
         <button
           onClick={() => { resetForm(); setModalOpen(true); }}
           disabled={channels.length >= 5}
-          className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2.5 rounded-xl disabled:opacity-40 transition-colors shadow-lg shadow-violet-900/20"
+          className="flex items-center gap-2 bg-[#cc181e] hover:bg-[#b01419] text-white text-sm font-medium px-4 py-2.5 rounded-xl disabled:opacity-40 transition-colors shadow-lg shadow-[#cc181e33]"
         >
           <Plus className="w-4 h-4" /> Connect Channel
         </button>
@@ -301,7 +301,7 @@ export default function TargetChannelsPage() {
             <button
               onClick={handleAdd}
               disabled={adding || !channelName.trim() || !oauthJson.trim()}
-              className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium disabled:opacity-40 transition-colors"
+              className="flex-1 py-2.5 rounded-xl bg-[#cc181e] hover:bg-[#b01419] text-white text-sm font-medium disabled:opacity-40 transition-colors"
             >
               {adding ? "Connecting…" : "Connect Channel"}
             </button>

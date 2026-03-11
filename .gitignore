@@ -73,3 +73,5 @@ INDEX.md
 !multiplier-ui/next.config.ts
 !multiplier-ui/postcss.config.mjs
 !multiplier-ui/eslint.config.mjs
+!multiplier-api/railway.json
+!multiplier-api/.env.example

@@ -56,6 +56,11 @@ def shutdown():
     stop_scheduler()
 
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 # ── Request / Response Models ──────────────────────────────────────────────────
 
 class AddSourceChannel(BaseModel):
@@ -122,6 +127,33 @@ def add_source_channel(body: AddSourceChannel):
             (channel_id, name, body.url, thumbnail),
         )
     return {"id": channel_id, "name": name, "url": body.url}
+
+
+@app.post("/channels/source/enrich")
+def enrich_source_channels():
+    """Re-fetch name + thumbnail for all source channels from yt-dlp API."""
+    import httpx as _httpx
+    YT_DLP_BASE = os.getenv("YT_DLP_API_BASE_URL", "http://localhost:8000")
+    with db() as conn:
+        rows = conn.execute("SELECT id, url FROM source_channels").fetchall()
+    updated = 0
+    for row in rows:
+        try:
+            resp = _httpx.get(f"{YT_DLP_BASE}/channel/list", params={"url": row["url"], "limit": 1}, timeout=30)
+            data = resp.json()
+            # /channel/list returns {"channel": "Channel Name", ...}
+            name = data.get("channel") or data.get("channel_name") or data.get("uploader") or ""
+            thumbnail = data.get("thumbnail") or ""
+            if name:
+                with db() as conn:
+                    conn.execute(
+                        "UPDATE source_channels SET name=?, thumbnail=? WHERE id=?",
+                        (name, thumbnail, row["id"]),
+                    )
+                updated += 1
+        except Exception:
+            pass
+    return {"updated": updated}
 
 
 @app.delete("/channels/source/{channel_id}", status_code=204)
