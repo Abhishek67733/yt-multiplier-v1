@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { useSession } from "next-auth/react";
+
 import { RefreshCw, TrendingUp, Eye, Zap, ExternalLink, BarChart3 } from "lucide-react";
 import { useToast } from "./ui/Toast";
 
@@ -67,8 +67,6 @@ function SummaryCard({ label, value, sub, accent }: {
 }
 
 export default function ReachStatsPage() {
-  const { data: session, status } = useSession();
-  const userEmail = session?.user?.email || "";
   const { success, error } = useToast();
   const [stats, setStats] = useState<StatEntry[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -76,30 +74,26 @@ export default function ReachStatsPage() {
   const [expandedVideo, setExpandedVideo] = useState<string | null>(null);
 
   const fetchStats = useCallback(async () => {
-    if (!userEmail) return;
     try {
-      const res = await fetch(`${API}/reach/stats`, { headers: { "x-user-email": userEmail } });
+      const res = await fetch(`${API}/reach/stats`);
       const data = await res.json();
       setStats(Array.isArray(data) ? data : []);
       setLastRefresh(new Date());
     } catch {
       // silently ignore — no toast spam on auto-refresh
     }
-  }, [userEmail]);
+  }, []);
 
   useEffect(() => {
-    if (status === "authenticated" && userEmail) {
-      fetchStats();
-      const interval = setInterval(fetchStats, 30 * 60 * 1000);
-      return () => clearInterval(interval);
-    }
-  }, [fetchStats, status, userEmail]);
+    fetchStats();
+    const interval = setInterval(fetchStats, 30 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [fetchStats]);
 
   const handleRefresh = async () => {
-    if (!userEmail) return;
     setRefreshing(true);
     try {
-      await fetch(`${API}/reach/refresh`, { method: "POST", headers: { "x-user-email": userEmail } });
+      await fetch(`${API}/reach/refresh`, { method: "POST" });
       success("Stats refresh triggered — reloading in 5s");
       setTimeout(async () => { await fetchStats(); setRefreshing(false); }, 5000);
     } catch {

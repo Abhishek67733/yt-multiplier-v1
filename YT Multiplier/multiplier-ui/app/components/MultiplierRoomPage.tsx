@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { useSession } from "next-auth/react";
+
 import {
   Flame, Eye, ThumbsUp, Sparkles, Rocket, Clock, ChevronDown,
   ChevronRight, Play, Loader2, CheckSquare, Square, Wand2,
@@ -505,8 +505,6 @@ interface MultipliedVideo {
 }
 
 function MultipliedVideosTab() {
-  const { data: session, status } = useSession();
-  const userEmail = session?.user?.email || "";
   const { success, error } = useToast();
   const [videos, setVideos] = useState<MultipliedVideo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -518,23 +516,22 @@ function MultipliedVideosTab() {
   const [multiplying, setMultiplying] = useState(false);
 
   const fetchVideos = useCallback(async () => {
-    if (!userEmail) return;
     try {
-      const data = await fetch(`${API}/upload/multiplied-videos`, { headers: { "x-user-email": userEmail } }).then((r) => r.json());
+      const data = await fetch(`${API}/upload/multiplied-videos`).then((r) => r.json());
       setVideos(Array.isArray(data) ? data : []);
     } catch {}
     finally { setLoading(false); }
-  }, [userEmail]);
+  }, []);
 
-  useEffect(() => { if (status === "authenticated" && userEmail) fetchVideos(); }, [fetchVideos, status, userEmail]);
+  useEffect(() => { fetchVideos(); }, [fetchVideos]);
 
   const handleBoost = async () => {
-    if (!modalVideo || !userEmail) return;
+    if (!modalVideo) return;
     setMultiplying(true);
     try {
       const res = await fetch(`${API}/upload/multiply-direct`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-user-email": userEmail },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           video_ids: [modalVideo.video_id],
           n_channels: moreChannels,
@@ -547,7 +544,7 @@ function MultipliedVideosTab() {
       setModalVideo(null);
       const poll = async () => {
         try {
-          const st = await fetch(`${API}/upload/multiply-direct/status`, { headers: { "x-user-email": userEmail } }).then((r) => r.json());
+          const st = await fetch(`${API}/upload/multiply-direct/status`).then((r) => r.json());
           if (st.running) { setTimeout(poll, 3000); }
           else {
             setMultiplying(false);
@@ -564,10 +561,9 @@ function MultipliedVideosTab() {
   const [expandedChannels, setExpandedChannels] = useState<Set<string>>(new Set());
 
   const handleRefreshStats = async () => {
-    if (!userEmail) return;
     setRefreshingStats(true);
     try {
-      await fetch(`${API}/upload/refresh-stats`, { method: "POST", headers: { "x-user-email": userEmail } });
+      await fetch(`${API}/upload/refresh-stats`, { method: "POST" });
       success("Stats refresh started — updating in background...");
       // Poll until done then reload
       const poll = async () => {
@@ -892,27 +888,24 @@ function fmtTime(d: string | null) {
 }
 
 function UploadLogTab() {
-  const { data: session, status } = useSession();
-  const userEmail = session?.user?.email || "";
   const [logs, setLogs] = useState<WebhookLog[]>([]);
   const [summary, setSummary] = useState<LogSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedLog, setExpandedLog] = useState<number | null>(null);
 
   const fetchLogs = useCallback(async () => {
-    if (!userEmail) return;
     try {
       const [logsRes, summaryRes] = await Promise.all([
-        fetch(`${API}/upload/webhook-logs`, { headers: { "x-user-email": userEmail } }).then((r) => r.json()),
-        fetch(`${API}/upload/webhook-logs/summary`, { headers: { "x-user-email": userEmail } }).then((r) => r.json()),
+        fetch(`${API}/upload/webhook-logs`).then((r) => r.json()),
+        fetch(`${API}/upload/webhook-logs/summary`).then((r) => r.json()),
       ]);
       setLogs(Array.isArray(logsRes) ? logsRes : []);
       setSummary(summaryRes);
     } catch {}
     finally { setLoading(false); }
-  }, [userEmail]);
+  }, []);
 
-  useEffect(() => { if (status === "authenticated" && userEmail) fetchLogs(); }, [fetchLogs, status, userEmail]);
+  useEffect(() => { fetchLogs(); }, [fetchLogs]);
 
   // Group logs by video_id for nice display
   const grouped = logs.reduce<Record<string, WebhookLog[]>>((acc, log) => {
@@ -1104,8 +1097,6 @@ function UploadLogTab() {
 // ── Main Component ───────────────────────────────────────────────────────────
 
 export default function MultiplierRoomPage() {
-  const { data: session, status } = useSession();
-  const userEmail = session?.user?.email || "";
   const { success, error } = useToast();
   const [subTab, setSubTab] = useState<"shorts" | "multiplied" | "logs">("shorts");
   const [shorts, setShorts] = useState<MultiplierShort[]>([]);
@@ -1134,15 +1125,14 @@ export default function MultiplierRoomPage() {
   const [showMultiply, setShowMultiply] = useState(false);
 
   const fetchAll = useCallback(async () => {
-    if (!userEmail) return;
     try {
-      const s = await fetch(`${API}/shorts/multiplier-room`, { headers: { "x-user-email": userEmail } }).then((r) => r.json());
+      const s = await fetch(`${API}/shorts/multiplier-room`).then((r) => r.json());
       setShorts(Array.isArray(s) ? s : []);
     } catch { }
     finally { setLoading(false); }
-  }, [userEmail]);
+  }, []);
 
-  useEffect(() => { if (status === "authenticated" && userEmail) fetchAll(); }, [fetchAll, status, userEmail]);
+  useEffect(() => { fetchAll(); }, [fetchAll]);
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -1163,10 +1153,9 @@ export default function MultiplierRoomPage() {
   };
 
   const handleGenerateTitles = async (videoId: string) => {
-    if (!userEmail) return;
     setGenerating((prev) => new Set(prev).add(videoId));
     try {
-      const res = await fetch(`${API}/shorts/${videoId}/generate-titles`, { method: "POST", headers: { "x-user-email": userEmail } });
+      const res = await fetch(`${API}/shorts/${videoId}/generate-titles`, { method: "POST" });
       if (!res.ok) throw new Error("Failed");
       success("5 niche-aware AI titles generated!");
       await fetchAll();
@@ -1177,10 +1166,9 @@ export default function MultiplierRoomPage() {
   };
 
   const handleGenerateAll = async () => {
-    if (!userEmail) return;
     setGeneratingAll(true);
     try {
-      await fetch(`${API}/shorts/generate-all-titles`, { method: "POST", headers: { "x-user-email": userEmail } });
+      await fetch(`${API}/shorts/generate-all-titles`, { method: "POST" });
       success("Generating niche-aware AI titles for all shorts...");
       const poll = setInterval(async () => { await fetchAll(); }, 5000);
       setTimeout(() => clearInterval(poll), 60000);
@@ -1189,13 +1177,12 @@ export default function MultiplierRoomPage() {
   };
 
   const handleMultiplySingle = async (videoId: string) => {
-    if (!userEmail) return;
     setMultiplyingFor(videoId);
     setMultiplyResultFor((prev) => ({ ...prev, [videoId]: null }));
     try {
       const res = await fetch(`${API}/upload/multiply-direct`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-user-email": userEmail },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           video_ids: [videoId],
           n_channels: nChannels,
@@ -1209,7 +1196,7 @@ export default function MultiplierRoomPage() {
       setMultiplyProgressFor((prev) => ({ ...prev, [videoId]: { completed: 0, total: d.total_webhooks, errors: 0 } }));
       const poll = async () => {
         try {
-          const st = await fetch(`${API}/upload/multiply-direct/status`, { headers: { "x-user-email": userEmail } }).then((r) => r.json());
+          const st = await fetch(`${API}/upload/multiply-direct/status`).then((r) => r.json());
           if (st.progress?.total_jobs) {
             setMultiplyProgressFor((prev) => ({
               ...prev,
@@ -1230,14 +1217,13 @@ export default function MultiplierRoomPage() {
   };
 
   const handleMultiply = async () => {
-    if (!userEmail) return;
     if (selected.size === 0) { error("Select at least one Short"); return; }
     setMultiplying(true);
     setMultiplyResult(null);
     try {
       const res = await fetch(`${API}/upload/multiply-direct`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-user-email": userEmail },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           video_ids: Array.from(selected),
           n_channels: nChannels,
@@ -1263,7 +1249,7 @@ export default function MultiplierRoomPage() {
 
       const poll = async () => {
         try {
-          const st = await fetch(`${API}/upload/multiply-direct/status`, { headers: { "x-user-email": userEmail } }).then((r) => r.json());
+          const st = await fetch(`${API}/upload/multiply-direct/status`).then((r) => r.json());
           if (st.progress?.total_jobs) {
             setMultiplyProgress({
               completed: st.progress.completed || 0,

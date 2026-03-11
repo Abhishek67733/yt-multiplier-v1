@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { useSession } from "next-auth/react";
+
 import { Plus, Trash2, Upload, CheckCircle, Settings, Youtube, Loader2 } from "lucide-react";
 import { useToast } from "./ui/Toast";
 
@@ -57,26 +57,23 @@ function EmptyState({ onConnect }: { onConnect: () => void }) {
 }
 
 export default function TargetChannelsPage() {
-  const { data: session, status } = useSession();
-  const userEmail = session?.user?.email || "";
   const { success, error } = useToast();
   const [channels, setChannels] = useState<TargetChannel[]>([]);
   const [apiDown, setApiDown] = useState(false);
   const [connecting, setConnecting] = useState(false);
 
   const fetchChannels = useCallback(async () => {
-    if (!userEmail) return;
     try {
-      const res = await fetch(`${API}/channels/target`, { headers: { "x-user-email": userEmail } });
+      const res = await fetch(`${API}/channels/target`);
       const data = await res.json();
       setChannels(Array.isArray(data) ? data : []);
       setApiDown(false);
     } catch {
       setApiDown(true);
     }
-  }, [userEmail]);
+  }, []);
 
-  useEffect(() => { if (status === "authenticated" && userEmail) fetchChannels(); }, [fetchChannels, status, userEmail]);
+  useEffect(() => { fetchChannels(); }, [fetchChannels]);
 
   // Check URL params for OAuth callback result
   useEffect(() => {
@@ -101,10 +98,9 @@ export default function TargetChannelsPage() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleConnect = async () => {
-    if (!userEmail) { error("Please sign in first"); return; }
     setConnecting(true);
     try {
-      const res = await fetch(`${API}/auth/youtube/connect`, { headers: { "x-user-email": userEmail } });
+      const res = await fetch(`${API}/auth/youtube/connect`);
       if (!res.ok) {
         const d = await res.json();
         throw new Error(d.detail || "Failed to start OAuth");
@@ -119,8 +115,7 @@ export default function TargetChannelsPage() {
   };
 
   const handleRemove = async (id: number) => {
-    if (!userEmail) return;
-    await fetch(`${API}/channels/target/${id}`, { method: "DELETE", headers: { "x-user-email": userEmail } });
+    await fetch(`${API}/channels/target/${id}`, { method: "DELETE" });
     success("Channel disconnected");
     await fetchChannels();
   };

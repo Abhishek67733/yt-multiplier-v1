@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { useSession } from "next-auth/react";
+
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Plus, RefreshCw, Trash2, PlaySquare, ChevronDown, ChevronRight,
@@ -433,8 +433,6 @@ function ChannelRow({ ch, shorts, onRemove }: { ch: Channel; shorts: Short[]; on
 }
 
 export default function SourceChannelsPage() {
-  const { data: session, status } = useSession();
-  const userEmail = session?.user?.email || "";
   const { success, error } = useToast();
   const [channels, setChannels] = useState<Channel[]>([]);
   const [shorts, setShorts] = useState<Short[]>([]);
@@ -446,11 +444,10 @@ export default function SourceChannelsPage() {
   const [apiDown, setApiDown] = useState(false);
 
   const fetchAll = useCallback(async () => {
-    if (!userEmail) return;
     try {
       const [ch, sh] = await Promise.all([
-        fetch(`${API}/channels/source`, { headers: { "x-user-email": userEmail } }).then((r) => r.json()),
-        fetch(`${API}/shorts/all`, { headers: { "x-user-email": userEmail } }).then((r) => r.json()),
+        fetch(`${API}/channels/source`).then((r) => r.json()),
+        fetch(`${API}/shorts/all`).then((r) => r.json()),
       ]);
       setApiDown(false);
       setChannels(Array.isArray(ch) ? ch : []);
@@ -458,35 +455,31 @@ export default function SourceChannelsPage() {
     } catch {
       setApiDown(true);
     }
-  }, [userEmail]);
+  }, []);
 
   const handleEnrich = useCallback(async () => {
-    if (!userEmail) return;
     setEnriching(true);
     try {
-      await fetch(`${API}/channels/source/enrich`, { method: "POST", headers: { "x-user-email": userEmail } });
+      await fetch(`${API}/channels/source/enrich`, { method: "POST" });
       await fetchAll();
     } catch { /* silent */ } finally {
       setEnriching(false);
     }
-  }, [fetchAll, userEmail]);
+  }, [fetchAll]);
 
   useEffect(() => {
-    if (status === "authenticated" && userEmail) {
-      fetchAll().then(() => {
-        // Auto-enrich on first load to pull thumbnails + names
-        handleEnrich();
-      });
-    }
-  }, [fetchAll, handleEnrich, status, userEmail]);
+    fetchAll().then(() => {
+      handleEnrich();
+    });
+  }, [fetchAll, handleEnrich]);
 
   const handleAdd = async () => {
-    if (!newUrl.trim() || !userEmail) return;
+    if (!newUrl.trim()) return;
     setAdding(true);
     try {
       const res = await fetch(`${API}/channels/source`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-user-email": userEmail },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: newUrl.trim() }),
       });
       if (!res.ok) {
@@ -505,24 +498,22 @@ export default function SourceChannelsPage() {
   };
 
   const handleRemove = async (id: string) => {
-    if (!userEmail) return;
-    await fetch(`${API}/channels/source/${encodeURIComponent(id)}`, { method: "DELETE", headers: { "x-user-email": userEmail } });
+    await fetch(`${API}/channels/source/${encodeURIComponent(id)}`, { method: "DELETE" });
     success("Channel removed");
     await fetchAll();
   };
 
   const handleScan = async () => {
-    if (!userEmail) return;
     setScanning(true);
     try {
-      const res = await fetch(`${API}/shorts/scan`, { method: "POST", headers: { "x-user-email": userEmail } });
+      const res = await fetch(`${API}/shorts/scan`, { method: "POST" });
       const data = await res.json();
       if (data.status === "already_running") {
         success("Scan already in progress...");
       }
       const poll = async () => {
         try {
-          const st = await fetch(`${API}/shorts/scan/status`, { headers: { "x-user-email": userEmail } }).then((r) => r.json());
+          const st = await fetch(`${API}/shorts/scan/status`).then((r) => r.json());
           if (st.running) {
             setTimeout(poll, 2000);
           } else {

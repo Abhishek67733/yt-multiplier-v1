@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { useSession } from "next-auth/react";
+
 import {
   Rocket, Clock, CheckCircle, XCircle, Loader2, Flame,
   Eye, Play, ChevronRight, Upload, AlertCircle,
@@ -80,8 +80,6 @@ function SliderTrack({ value, min, max, onChange, labels }: {
 }
 
 export default function UploadQueuePage() {
-  const { data: session, status } = useSession();
-  const userEmail = session?.user?.email || "";
   const { success, error } = useToast();
   const [queued, setQueued] = useState<Short[]>([]);
   const [jobs, setJobs] = useState<UploadJob[]>([]);
@@ -93,12 +91,11 @@ export default function UploadQueuePage() {
   const [activeJobTab, setActiveJobTab] = useState<"all" | "pending" | "done" | "failed">("all");
 
   const fetchAll = useCallback(async () => {
-    if (!userEmail) return;
     try {
       const [q, j, t] = await Promise.all([
-        fetch(`${API}/shorts/queue`, { headers: { "x-user-email": userEmail } }).then((r) => r.json()),
-        fetch(`${API}/upload/jobs`, { headers: { "x-user-email": userEmail } }).then((r) => r.json()),
-        fetch(`${API}/channels/target`, { headers: { "x-user-email": userEmail } }).then((r) => r.json()),
+        fetch(`${API}/shorts/queue`).then((r) => r.json()),
+        fetch(`${API}/upload/jobs`).then((r) => r.json()),
+        fetch(`${API}/channels/target`).then((r) => r.json()),
       ]);
       setQueued(Array.isArray(q) ? q : []);
       setJobs(Array.isArray(j) ? j : []);
@@ -106,18 +103,16 @@ export default function UploadQueuePage() {
     } catch {
       // silently ignore — no toast spam on auto-refresh
     }
-  }, [userEmail]);
+  }, []);
 
   useEffect(() => {
-    if (status === "authenticated" && userEmail) {
-      fetchAll();
-      const interval = setInterval(fetchAll, 30_000);
-      return () => clearInterval(interval);
-    }
-  }, [fetchAll, status, userEmail]);
+    fetchAll();
+    const interval = setInterval(fetchAll, 30_000);
+    return () => clearInterval(interval);
+  }, [fetchAll]);
 
   const handleLaunch = async () => {
-    if (!selected || !userEmail) return;
+    if (!selected) return;
     if (targets.length === 0) {
       error("No target channels configured — go to Target Channels first");
       return;
@@ -126,7 +121,7 @@ export default function UploadQueuePage() {
     try {
       const res = await fetch(`${API}/upload/start`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-user-email": userEmail },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ video_id: selected.video_id, n_channels: nChannels, gap_hours: gapHours }),
       });
       const d = await res.json();
@@ -142,8 +137,7 @@ export default function UploadQueuePage() {
   };
 
   const handleExecuteNow = async (jobId: number) => {
-    if (!userEmail) return;
-    await fetch(`${API}/upload/execute/${jobId}`, { method: "POST", headers: { "x-user-email": userEmail } });
+    await fetch(`${API}/upload/execute/${jobId}`, { method: "POST" });
     success("Upload triggered");
     setTimeout(fetchAll, 2000);
   };

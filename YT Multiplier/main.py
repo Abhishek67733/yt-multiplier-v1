@@ -21,7 +21,7 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build as google_build
 from google.oauth2.credentials import Credentials
 
-from database import supabase, get_or_create_user
+from database import supabase
 from yt_client import get_channel_shorts, channel_info, get_video_stats, download_video_bytes
 from caption_ai import generate_caption_variation, generate_title_variation
 from youtube_upload import upload_short, get_video_stats_from_api
@@ -59,19 +59,37 @@ YOUTUBE_SCOPES = [
 
 # ── User Resolution ──────────────────────────────────────────────────────────
 
-def get_user_id(x_user_email: str = Header(None)) -> str:
-    """Extract user_id from x-user-email header. Returns user UUID."""
-    if not x_user_email:
-        raise HTTPException(401, "Missing x-user-email header")
-    return get_or_create_user(x_user_email)
+DEFAULT_USER_ID: str | None = None
+
+def _ensure_default_user() -> str:
+    """Create or fetch a default user on startup."""
+    global DEFAULT_USER_ID
+    if DEFAULT_USER_ID:
+        return DEFAULT_USER_ID
+    # Check if any user exists
+    existing = supabase.table("users").select("id").limit(1).execute().data
+    if existing:
+        DEFAULT_USER_ID = existing[0]["id"]
+    else:
+        result = supabase.table("users").insert({"email": "default@ytmultiplier.app", "name": "Default User"}).execute()
+        DEFAULT_USER_ID = result.data[0]["id"]
+    return DEFAULT_USER_ID
 
 
-def get_optional_user_id(x_user_email: str = Header(None)) -> Optional[str]:
-    """Same as get_user_id but returns None instead of raising."""
-    if not x_user_email:
-        return None
+def get_user_id(x_user_id: str = Header(None)) -> str:
+    """Get user_id from x-user-id header, or fall back to default user."""
+    if x_user_id:
+        # Validate it exists
+        existing = supabase.table("users").select("id").eq("id", x_user_id).execute().data
+        if existing:
+            return existing[0]["id"]
+    return _ensure_default_user()
+
+
+def get_optional_user_id(x_user_id: str = Header(None)) -> Optional[str]:
+    """Same as get_user_id but never raises."""
     try:
-        return get_or_create_user(x_user_email)
+        return get_user_id(x_user_id)
     except Exception:
         return None
 
@@ -80,6 +98,7 @@ def get_optional_user_id(x_user_email: str = Header(None)) -> Optional[str]:
 
 @app.on_event("startup")
 def startup():
+    _ensure_default_user()
     from scheduler import start_scheduler
     start_scheduler()
 
@@ -93,6 +112,13 @@ def shutdown():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/auth/me")
+def get_or_create_me():
+    """Return current user_id. Creates a default user if none exists."""
+    uid = _ensure_default_user()
+    return {"user_id": uid}
 
 
 # ── Request / Response Models ──────────────────────────────────────────────────
@@ -189,16 +215,16 @@ def remove_source_channel(channel_id: str, user_id: str = Depends(get_user_id)):
 # ── YouTube OAuth Connect Flow ─────────────────────────────────────────────────
 
 @app.get("/auth/youtube/connect")
-def youtube_oauth_connect(x_user_email: str = Header(None)):
+def youtube_oauth_connect(x_user_id: str = Header(None)):
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(500, "Google OAuth credentials not configured on the server")
 
     redirect_uri = OAUTH_REDIRECT_URI or "http://localhost:8001/auth/youtube/callback"
     scopes = " ".join(YOUTUBE_SCOPES)
-    state_data = x_user_email or ""
+    state_data = x_user_id or _ensure_default_user()
     state = secrets.token_urlsafe(22)
-    # Store email in state so callback can resolve user
-    # Format: random_token|email
+    # Store user_id in state so callback can resolve user
+    # Format: random_token|user_id
     combined_state = f"{state}|{state_data}"
     auth_url = (
         f"https://accounts.google.com/o/oauth2/auth"
@@ -216,10 +242,9 @@ def youtube_oauth_connect(x_user_email: str = Header(None)):
 @app.get("/auth/youtube/callback")
 def youtube_oauth_callback(code: str = Query(...), state: str = Query(None)):
     try:
-        # Extract email from state
-        user_email = ""
+        user_id_from_state = ""
         if state and "|" in state:
-            _, user_email = state.split("|", 1)
+            _, user_id_from_state = state.split("|", 1)
 
         redirect_uri = OAUTH_REDIRECT_URI or "http://localhost:8001/auth/youtube/callback"
         token_resp = httpx.post("https://oauth2.googleapis.com/token", data={
@@ -261,15 +286,7 @@ def youtube_oauth_callback(code: str = Query(...), state: str = Query(None)):
         }
 
         # Resolve user
-        user_id = None
-        if user_email:
-            try:
-                user_id = get_or_create_user(user_email)
-            except Exception:
-                pass
-
-        if not user_id:
-            return RedirectResponse(f"{FRONTEND_URL}/dashboard?youtube_connect=error&reason=no_user_email")
+        user_id = user_id_from_state or _ensure_default_user()
 
         # Upsert target channel
         existing = supabase.table("target_channels").select("id").eq("channel_id", channel_id).eq("user_id", user_id).execute()
