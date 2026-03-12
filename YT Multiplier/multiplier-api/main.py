@@ -104,6 +104,18 @@ def startup():
         _ensure_default_user()
     except Exception as e:
         print(f"[startup] Warning: failed to ensure default user: {e}")
+    # Fix webhook_logs auto-increment sequence if out of sync
+    try:
+        supabase.rpc("fix_webhook_logs_seq", {}).execute()
+    except Exception:
+        # RPC may not exist yet — that's fine, we'll handle insert errors gracefully
+        try:
+            # Alternative: just get max id and we'll handle conflicts
+            rows = supabase.table("webhook_logs").select("id").order("id", desc=True).limit(1).execute().data
+            if rows:
+                print(f"[startup] webhook_logs max id: {rows[0]['id']}")
+        except Exception:
+            pass
     try:
         from scheduler import start_scheduler
         start_scheduler()
@@ -843,6 +855,20 @@ def _next_peak_slot(base_time, slot_index, gap_hours, use_peak):
     return candidate
 
 
+def _insert_webhook_log(row: dict):
+    """Insert a webhook_log row, handling Supabase sequence conflicts gracefully."""
+    try:
+        supabase.table("webhook_logs").insert(row).execute()
+    except Exception as e:
+        if "23505" in str(e) or "duplicate key" in str(e).lower():
+            # Sequence is out of sync — get max id and set explicit id
+            max_row = supabase.table("webhook_logs").select("id").order("id", desc=True).limit(1).execute().data
+            next_id = (max_row[0]["id"] + 1) if max_row else 1
+            row["id"] = next_id
+            supabase.table("webhook_logs").insert(row).execute()
+        else:
+            raise
+
 
 
 # ── Multiply Direct (YouTube Upload) ──────────────────────────────────────────
@@ -1024,29 +1050,32 @@ def _run_direct_upload(video_ids, video_target_map, do_process, user_id):
                     "processed": do_process,
                 })
 
-                # Log success
-                supabase.table("webhook_logs").insert({
-                    "user_id": user_id,
-                    "video_id": vid_id,
-                    "original_title": short["title"],
-                    "new_title": picked_title,
-                    "caption": caption,
-                    "channel_number": idx + 1,
-                    "channel_name": channel_name,
-                    "total_channels": len(targets),
-                    "file_size_bytes": video_size,
-                    "video_processed": 1 if do_process else 0,
-                    "scheduled_at": datetime.now(timezone.utc).isoformat(),
-                    "webhook_status": 200,
-                    "webhook_url": f"youtube-direct://{target.get('channel_id', '')}",
-                    "velocity_score": short.get("velocity_score") or 0,
-                    "trend": short.get("trend") or "flat",
-                    "thumbnail": short.get("thumbnail") or "",
-                    "status": "sent",
-                    "uploaded_video_id": yt_video_id,
-                }).execute()
-
                 _multiply_state["progress"]["completed"] = _multiply_state["progress"].get("completed", 0) + 1
+
+                # Log success (separate try so logging failure doesn't affect upload count)
+                try:
+                    _insert_webhook_log({
+                        "user_id": user_id,
+                        "video_id": vid_id,
+                        "original_title": short["title"],
+                        "new_title": picked_title,
+                        "caption": caption,
+                        "channel_number": idx + 1,
+                        "channel_name": channel_name,
+                        "total_channels": len(targets),
+                        "file_size_bytes": video_size,
+                        "video_processed": 1 if do_process else 0,
+                        "scheduled_at": datetime.now(timezone.utc).isoformat(),
+                        "webhook_status": 200,
+                        "webhook_url": f"youtube-direct://{target.get('channel_id', '')}",
+                        "velocity_score": short.get("velocity_score") or 0,
+                        "trend": short.get("trend") or "flat",
+                        "thumbnail": short.get("thumbnail") or "",
+                        "status": "sent",
+                        "uploaded_video_id": yt_video_id,
+                    })
+                except Exception as log_err:
+                    print(f"[multiply] Warning: logging to webhook_logs failed: {log_err}")
 
             except Exception as e:
                 err = f"{vid_id} -> {channel_name}: upload failed - {e}"
@@ -1055,7 +1084,7 @@ def _run_direct_upload(video_ids, video_target_map, do_process, user_id):
                 _multiply_state["progress"]["completed"] = _multiply_state["progress"].get("completed", 0) + 1
                 _multiply_state["progress"]["errors"] = _multiply_state["progress"].get("errors", 0) + 1
                 try:
-                    supabase.table("webhook_logs").insert({
+                    _insert_webhook_log({
                         "user_id": user_id,
                         "video_id": vid_id,
                         "original_title": short["title"],
@@ -1073,7 +1102,7 @@ def _run_direct_upload(video_ids, video_target_map, do_process, user_id):
                         "thumbnail": short.get("thumbnail") or "",
                         "error_message": str(e),
                         "status": "failed",
-                    }).execute()
+                    })
                 except Exception:
                     pass
 
