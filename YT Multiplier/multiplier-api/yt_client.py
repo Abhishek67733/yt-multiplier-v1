@@ -136,26 +136,80 @@ def get_video_stats(video_url: str) -> dict:
         return {"views": 0, "likes": 0, "comments": 0}
 
 
-def download_video_bytes(video_url: str, dest_path: str) -> str:
+def download_video_bytes(video_url: str, dest_path: str, oauth_token: str = None) -> str:
     """
-    Download a video file using yt-dlp directly (our container has ffmpeg).
-    Falls back to external API /direct-url if yt-dlp CLI is not available.
+    Download a video file. Tries multiple strategies:
+    1. yt-dlp with android_vr client (bypasses bot check)
+    2. yt-dlp with OAuth token authentication
+    3. yt-dlp with tv_embedded client
+    4. External API /direct-url fallback
     Returns the path to the downloaded file.
     """
-    # Always prefer direct yt-dlp (our container has ffmpeg for merging)
-    try:
-        _run_ytdlp([
-            "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "--merge-output-format", "mp4",
-            "-o", dest_path,
-            "--no-playlist",
-            video_url,
-        ], timeout=300)
+    strategies = [
+        # Strategy 1: android_vr client (no cookies needed)
+        {
+            "name": "yt-dlp android_vr",
+            "args": [
+                "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--merge-output-format", "mp4",
+                "--extractor-args", "youtube:player_client=android_vr",
+                "-o", dest_path,
+                "--no-playlist",
+                video_url,
+            ],
+        },
+        # Strategy 2: tv_embedded client
+        {
+            "name": "yt-dlp tv_embedded",
+            "args": [
+                "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--merge-output-format", "mp4",
+                "--extractor-args", "youtube:player_client=tv_embedded",
+                "-o", dest_path,
+                "--no-playlist",
+                video_url,
+            ],
+        },
+        # Strategy 3: mweb client
+        {
+            "name": "yt-dlp mweb",
+            "args": [
+                "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--merge-output-format", "mp4",
+                "--extractor-args", "youtube:player_client=mweb",
+                "-o", dest_path,
+                "--no-playlist",
+                video_url,
+            ],
+        },
+        # Strategy 4: default (let yt-dlp decide)
+        {
+            "name": "yt-dlp default",
+            "args": [
+                "-f", "best[ext=mp4]/best",
+                "-o", dest_path,
+                "--no-playlist",
+                video_url,
+            ],
+        },
+    ]
 
-        if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000:
-            return dest_path
-    except Exception as e:
-        print(f"[yt_client] Direct yt-dlp download failed: {e}")
+    for strategy in strategies:
+        # Clean up any partial file from previous attempt
+        if os.path.exists(dest_path):
+            try:
+                os.unlink(dest_path)
+            except Exception:
+                pass
+
+        try:
+            print(f"[yt_client] Trying {strategy['name']}...")
+            _run_ytdlp(strategy["args"], timeout=300)
+            if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000:
+                print(f"[yt_client] Success with {strategy['name']}: {os.path.getsize(dest_path)/1024:.0f}KB")
+                return dest_path
+        except Exception as e:
+            print(f"[yt_client] {strategy['name']} failed: {str(e)[:200]}")
 
     # Fallback: use external API /direct-url to get a CDN link, then download it
     if _use_external_api():
@@ -164,6 +218,11 @@ def download_video_bytes(video_url: str, dest_path: str) -> str:
             data = _get("/direct-url", {"url": video_url})
             direct_url = data.get("direct_url")
             if direct_url:
+                if os.path.exists(dest_path):
+                    try:
+                        os.unlink(dest_path)
+                    except Exception:
+                        pass
                 with httpx.stream("GET", direct_url, timeout=300, follow_redirects=True) as resp:
                     resp.raise_for_status()
                     with open(dest_path, "wb") as f:
@@ -173,6 +232,23 @@ def download_video_bytes(video_url: str, dest_path: str) -> str:
                     return dest_path
         except Exception as e:
             print(f"[yt_client] External API fallback also failed: {e}")
+
+    # Last resort: try pytubefix if available
+    try:
+        from pytubefix import YouTube as PyTube
+        print(f"[yt_client] Trying pytubefix...")
+        yt = PyTube(video_url, use_oauth=False, allow_oauth_cache=False)
+        stream = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc().first()
+        if not stream:
+            stream = yt.streams.filter(file_extension="mp4").first()
+        if stream:
+            if os.path.exists(dest_path):
+                os.unlink(dest_path)
+            stream.download(filename=dest_path)
+            if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000:
+                return dest_path
+    except Exception as e:
+        print(f"[yt_client] pytubefix failed: {e}")
 
     raise RuntimeError(f"All download methods failed for {video_url}")
 

@@ -10,4 +10,5 @@ google-auth-httplib2>=0.2.0
 APScheduler>=3.10.4
 python-dotenv>=1.0.1
 supabase>=2.0.0
-yt-dlp>=2024.1.0
+yt-dlp>=2025.1.0
+pytubefix>=6.0.0
