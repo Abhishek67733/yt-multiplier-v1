@@ -815,21 +815,14 @@ _multiply_state: dict = {"running": False, "last_result": None, "progress": {}}
 
 @app.post("/upload/webhook-test")
 def webhook_test_upload(body: WebhookTestRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user_id)):
-    if _webhook_state["running"]:
-        return {"status": "already_running"}
-    if not body.video_ids:
-        raise HTTPException(400, "No video_ids provided")
-    _webhook_state["running"] = True
-    _webhook_state["last_result"] = None
-    background_tasks.add_task(_run_webhook_test, body.video_ids, body.n_channels, body.process_video, body.use_peak_hours, user_id)
-    return {
-        "status": "webhook_test_started",
-        "videos": len(body.video_ids),
-        "channels_per_video": body.n_channels,
-        "total_webhooks": len(body.video_ids) * body.n_channels,
-        "webhook_url": WEBHOOK_URL,
-        "ffmpeg_processing": body.process_video,
-    }
+    """Legacy endpoint — now redirects to direct YouTube upload."""
+    multiply_body = MultiplyViaWebhookRequest(
+        video_ids=body.video_ids,
+        n_channels=body.n_channels,
+        process_video=body.process_video,
+        use_peak_hours=body.use_peak_hours,
+    )
+    return multiply_direct(multiply_body, background_tasks, user_id)
 
 
 @app.get("/upload/webhook-test/status")
@@ -852,15 +845,80 @@ def _next_peak_slot(base_time, slot_index, gap_hours, use_peak):
     return candidate
 
 
-def _run_webhook_test(video_ids, n_channels, do_process=True, use_peak=True, user_id=None, video_available_channels=None):
+
+
+# ── Multiply Direct (YouTube Upload) ──────────────────────────────────────────
+
+@app.post("/upload/multiply-direct")
+@app.post("/upload/multiply-via-webhook")
+def multiply_direct(body: MultiplyViaWebhookRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user_id)):
+    if _multiply_state["running"]:
+        return {"status": "already_running"}
+    if not body.video_ids:
+        raise HTTPException(400, "No video_ids provided")
+
+    # Get all target channels with OAuth credentials
+    targets = supabase.table("target_channels").select("id, channel_name, channel_id, oauth_credentials").eq("user_id", user_id).execute().data
+    if not targets:
+        raise HTTPException(400, "No target channels configured. Add target channels with YouTube OAuth first.")
+
+    # Limit to n_channels
+    selected_targets = targets[:body.n_channels]
+
+    # Check which video+channel combos already uploaded
+    skipped = []
+    valid_video_ids = []
+    video_target_map = {}
+
+    for vid_id in body.video_ids:
+        existing_logs = supabase.table("webhook_logs").select("channel_name").eq("video_id", vid_id).eq("user_id", user_id).eq("status", "sent").execute().data
+        already_uploaded_channels = {r["channel_name"] for r in existing_logs}
+        available_targets = [t for t in selected_targets if t["channel_name"] not in already_uploaded_channels]
+        if not available_targets:
+            skipped.append(vid_id)
+        else:
+            valid_video_ids.append(vid_id)
+            video_target_map[vid_id] = available_targets
+
+    total_uploads = sum(len(video_target_map[v]) for v in valid_video_ids)
+
+    _multiply_state["running"] = True
+    _multiply_state["last_result"] = None
+    _multiply_state["progress"] = {
+        "total_videos": len(valid_video_ids),
+        "total_channels": len(selected_targets),
+        "total_jobs": total_uploads,
+        "completed": 0,
+        "errors": 0,
+    }
+
+    if valid_video_ids:
+        background_tasks.add_task(_run_direct_upload, valid_video_ids, video_target_map, body.process_video, user_id)
+
+    return {
+        "status": "multiply_started",
+        "videos": len(valid_video_ids),
+        "channels_per_video": len(selected_targets),
+        "total_webhooks": total_uploads,
+        "skipped": skipped,
+    }
+
+
+@app.get("/upload/multiply-direct/status")
+@app.get("/upload/multiply-via-webhook/status")
+def multiply_status():
+    return {
+        "running": _multiply_state["running"],
+        "progress": _multiply_state["progress"],
+        "last_result": _multiply_state.get("last_result") or _webhook_state.get("last_result"),
+    }
+
+
+def _run_direct_upload(video_ids, video_target_map, do_process, user_id):
+    """Download each video, generate AI titles, then upload directly to each target channel via YouTube API."""
     results = []
     errors = []
     cleanup_files = []
-
-    target_channel_names = []
-    if user_id:
-        rows = supabase.table("target_channels").select("channel_name").eq("user_id", user_id).order("id").execute().data
-        target_channel_names = [r["channel_name"] for r in rows]
 
     for vid_id in video_ids:
         short_data = supabase.table("shorts").select("*").eq("video_id", vid_id).eq("user_id", user_id).execute().data
@@ -869,23 +927,25 @@ def _run_webhook_test(video_ids, n_channels, do_process=True, use_peak=True, use
             continue
         short = short_data[0]
 
+        # Get or generate AI titles
         ai_titles_data = supabase.table("ai_titles").select("title").eq("video_id", vid_id).eq("user_id", user_id).execute().data
         ai_title_list = [t["title"] for t in ai_titles_data]
-
         if not ai_title_list:
             try:
                 ai_title_list = [generate_title_variation(short["title"] or "Short Video") for _ in range(5)]
                 for t in ai_title_list:
                     supabase.table("ai_titles").insert({"user_id": user_id, "video_id": vid_id, "title": t}).execute()
             except Exception as e:
-                print(f"[webhook] AI title generation failed for {vid_id}: {e}")
-                ai_title_list = [short["title"]]
+                print(f"[multiply] AI title generation failed for {vid_id}: {e}")
+                ai_title_list = [short["title"] or "Short Video"]
 
+        # Generate caption
         try:
             caption = generate_caption_variation(short["title"] or "", short["description"] or "")
         except Exception:
             caption = short.get("description") or short.get("title") or ""
 
+        # Download video
         tmp_path = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
@@ -895,32 +955,24 @@ def _run_webhook_test(video_ids, n_channels, do_process=True, use_peak=True, use
             download_video_bytes(video_url, tmp_path)
         except Exception as e:
             errors.append(f"{vid_id}: download failed - {e}")
+            _multiply_state["progress"]["errors"] = _multiply_state["progress"].get("errors", 0) + 1
             continue
 
-        now = datetime.now(timezone.utc)
-        if video_available_channels and vid_id in video_available_channels:
-            channel_numbers = list(video_available_channels[vid_id])
-        else:
-            channel_numbers = list(range(1, n_channels + 1))
-        random.shuffle(channel_numbers)
-
+        # Upload to each target channel
+        targets = video_target_map.get(vid_id, [])
         shuffled_titles = list(ai_title_list)
         random.shuffle(shuffled_titles)
 
-        for slot_idx, ch_num in enumerate(channel_numbers):
-            if ch_num <= len(target_channel_names):
-                channel_name = target_channel_names[ch_num - 1]
-            else:
-                channel_name = f"Channel {ch_num}"
+        for idx, target in enumerate(targets):
+            channel_name = target["channel_name"]
+            target_id = target["id"]
+            picked_title = shuffled_titles[idx % len(shuffled_titles)]
 
-            picked_title = shuffled_titles[slot_idx % len(shuffled_titles)]
-            jitter_minutes = random.randint(-30, 30)
-            scheduled_at = _next_peak_slot(now, slot_idx, 2, use_peak) + timedelta(minutes=jitter_minutes)
-
+            # Optionally process video for uniqueness
             send_path = tmp_path
             if do_process:
                 try:
-                    processed_path = process_video(tmp_path, channel_num=ch_num)
+                    processed_path = process_video(tmp_path, channel_num=idx + 1)
                     if processed_path != tmp_path:
                         cleanup_files.append(processed_path)
                         send_path = processed_path
@@ -928,77 +980,69 @@ def _run_webhook_test(video_ids, n_channels, do_process=True, use_peak=True, use
                     pass
 
             video_size = os.path.getsize(send_path)
-            channel_label = f"YT{ch_num}"
             try:
-                metadata = {
-                    "event": "multiply_upload",
-                    "channel_number": ch_num,
-                    "channel_label": channel_label,
-                    "channel_name": channel_name,
-                    "total_channels": n_channels,
-                    "video_id": vid_id,
-                    "original_title": short["title"] or "",
-                    "new_title": picked_title,
-                    "all_ai_titles": ai_title_list,
-                    "caption": caption,
-                    "description": short.get("description") or "",
-                    "original_url": short.get("url") or "",
-                    "thumbnail": short.get("thumbnail") or "",
-                    "views": short.get("views_last_check") or 0,
-                    "views_delta": short.get("views_delta") or 0,
-                    "likes": short.get("likes") or 0,
-                    "duration": short.get("duration") or 0,
-                    "published_at": short.get("published_at") or "",
-                    "velocity_score": short.get("velocity_score") or 0,
-                    "trend": short.get("trend") or "flat",
-                    "scheduled_at": scheduled_at.isoformat(),
-                    "video_processed": do_process,
-                    "file_size_bytes": video_size,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-                metadata_bytes = json.dumps(metadata, indent=2).encode("utf-8")
+                oauth_creds = target.get("oauth_credentials")
+                if isinstance(oauth_creds, str):
+                    oauth_creds = json.loads(oauth_creds)
 
-                with open(send_path, "rb") as vf:
-                    files = [
-                        ("video_file", (f"{vid_id}_{channel_label}.mp4", vf, "video/mp4")),
-                        ("metadata", ("metadata.json", metadata_bytes, "application/json")),
-                    ]
-                    resp = httpx.post(WEBHOOK_URL, files=files, timeout=60)
-                resp.raise_for_status()
+                print(f"[multiply] Uploading {vid_id} to {channel_name}...")
+                upload_result = upload_short(
+                    video_path=send_path,
+                    title=picked_title,
+                    description=caption,
+                    oauth_credentials_json=json.dumps(oauth_creds) if isinstance(oauth_creds, dict) else oauth_creds,
+                )
+                yt_video_id = upload_result["youtube_video_id"]
+                print(f"[multiply] Uploaded {vid_id} -> {channel_name}: {yt_video_id}")
+
+                # Update stored OAuth creds if refreshed
+                if upload_result.get("updated_credentials"):
+                    supabase.table("target_channels").update({"oauth_credentials": upload_result["updated_credentials"]}).eq("id", target_id).execute()
+
+                # Update upload count
+                tc_row = supabase.table("target_channels").select("upload_count").eq("id", target_id).execute().data
+                new_count = (tc_row[0]["upload_count"] or 0) + 1 if tc_row else 1
+                supabase.table("target_channels").update({
+                    "upload_count": new_count,
+                    "last_upload_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", target_id).execute()
 
                 results.append({
                     "video_id": vid_id,
-                    "channel_label": channel_label,
-                    "channel": channel_name,
+                    "channel_name": channel_name,
+                    "youtube_video_id": yt_video_id,
                     "title_used": picked_title,
-                    "webhook_status": resp.status_code,
                     "file_size_kb": round(video_size / 1024),
                     "processed": do_process,
-                    "scheduled_at": scheduled_at.isoformat(),
                 })
+
+                # Log success
                 supabase.table("webhook_logs").insert({
                     "user_id": user_id,
                     "video_id": vid_id,
                     "original_title": short["title"],
                     "new_title": picked_title,
                     "caption": caption,
-                    "channel_number": ch_num,
+                    "channel_number": idx + 1,
                     "channel_name": channel_name,
-                    "total_channels": n_channels,
+                    "total_channels": len(targets),
                     "file_size_bytes": video_size,
                     "video_processed": 1 if do_process else 0,
-                    "scheduled_at": scheduled_at.isoformat(),
-                    "webhook_status": resp.status_code,
-                    "webhook_url": WEBHOOK_URL,
+                    "scheduled_at": datetime.now(timezone.utc).isoformat(),
+                    "webhook_status": 200,
+                    "webhook_url": f"youtube-direct://{target.get('channel_id', '')}",
                     "velocity_score": short.get("velocity_score") or 0,
                     "trend": short.get("trend") or "flat",
                     "thumbnail": short.get("thumbnail") or "",
                     "status": "sent",
+                    "uploaded_video_id": yt_video_id,
                 }).execute()
+
                 _multiply_state["progress"]["completed"] = _multiply_state["progress"].get("completed", 0) + 1
 
             except Exception as e:
-                err = f"{vid_id} -> {channel_label}: webhook failed - {e}"
+                err = f"{vid_id} -> {channel_name}: upload failed - {e}"
+                print(f"[multiply] {err}")
                 errors.append(err)
                 _multiply_state["progress"]["completed"] = _multiply_state["progress"].get("completed", 0) + 1
                 _multiply_state["progress"]["errors"] = _multiply_state["progress"].get("errors", 0) + 1
@@ -1009,13 +1053,13 @@ def _run_webhook_test(video_ids, n_channels, do_process=True, use_peak=True, use
                         "original_title": short["title"],
                         "new_title": picked_title,
                         "caption": caption,
-                        "channel_number": ch_num,
+                        "channel_number": idx + 1,
                         "channel_name": channel_name,
-                        "total_channels": n_channels,
+                        "total_channels": len(targets),
                         "file_size_bytes": video_size,
                         "video_processed": 1 if do_process else 0,
-                        "scheduled_at": scheduled_at.isoformat(),
-                        "webhook_url": WEBHOOK_URL,
+                        "scheduled_at": datetime.now(timezone.utc).isoformat(),
+                        "webhook_url": f"youtube-direct://{target.get('channel_id', '')}",
                         "velocity_score": short.get("velocity_score") or 0,
                         "trend": short.get("trend") or "flat",
                         "thumbnail": short.get("thumbnail") or "",
@@ -1025,9 +1069,17 @@ def _run_webhook_test(video_ids, n_channels, do_process=True, use_peak=True, use
                 except Exception:
                     pass
 
+    # Cleanup temp files
     for f in cleanup_files:
         try:
             os.unlink(f)
+        except Exception:
+            pass
+
+    # Mark shorts as done
+    for vid_id in video_ids:
+        try:
+            supabase.table("shorts").update({"status": "done"}).eq("video_id", vid_id).eq("user_id", user_id).execute()
         except Exception:
             pass
 
@@ -1036,77 +1088,6 @@ def _run_webhook_test(video_ids, n_channels, do_process=True, use_peak=True, use
     _webhook_state["running"] = False
     _multiply_state["last_result"] = final_result
     _multiply_state["running"] = False
-
-
-# ── Multiply via n8n Webhook ──────────────────────────────────────────────────
-
-@app.post("/upload/multiply-via-webhook")
-def multiply_via_webhook(body: MultiplyViaWebhookRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user_id)):
-    if _multiply_state["running"]:
-        return {"status": "already_running"}
-    if not body.video_ids:
-        raise HTTPException(400, "No video_ids provided")
-
-    target_count = len(supabase.table("target_channels").select("id").eq("user_id", user_id).execute().data)
-    max_used_data = supabase.table("webhook_logs").select("channel_number").eq("user_id", user_id).order("channel_number", desc=True).limit(1).execute().data
-    max_used = max_used_data[0]["channel_number"] if max_used_data else 0
-    max_channels = max(target_count, body.n_channels, max_used)
-
-    last_upload_data = supabase.table("webhook_logs").select("channel_number, created_at").eq("user_id", user_id).eq("status", "sent").execute().data
-    last_upload_map = {}
-    for r in last_upload_data:
-        ch = r["channel_number"]
-        if ch not in last_upload_map or r["created_at"] > last_upload_map[ch]:
-            last_upload_map[ch] = r["created_at"]
-
-    all_channel_nums = list(range(1, max_channels + 1))
-    valid_video_ids = []
-    video_available_channels = {}
-
-    for vid_id in body.video_ids:
-        sorted_channels = sorted(all_channel_nums, key=lambda ch: last_upload_map.get(ch) or "0000-00-00")
-        available = sorted_channels[:body.n_channels]
-        valid_video_ids.append(vid_id)
-        video_available_channels[vid_id] = available
-
-    _multiply_state["running"] = True
-    _multiply_state["last_result"] = None
-    total_new_uploads = sum(len(video_available_channels[v]) for v in valid_video_ids)
-    _multiply_state["progress"] = {
-        "total_videos": len(valid_video_ids),
-        "total_channels": body.n_channels,
-        "total_jobs": total_new_uploads,
-        "completed": 0,
-        "errors": 0,
-    }
-    background_tasks.add_task(_run_webhook_test, valid_video_ids, body.n_channels, body.process_video, body.use_peak_hours, user_id, video_available_channels)
-    return {
-        "status": "multiply_started",
-        "videos": len(valid_video_ids),
-        "channels_per_video": body.n_channels,
-        "total_webhooks": total_new_uploads,
-    }
-
-
-@app.get("/upload/multiply-via-webhook/status")
-def multiply_status():
-    return {
-        "running": _multiply_state["running"],
-        "progress": _multiply_state["progress"],
-        "last_result": _multiply_state.get("last_result") or _webhook_state.get("last_result"),
-    }
-
-
-# ── Aliases for frontend (multiply-direct → multiply-via-webhook) ─────────────
-
-@app.post("/upload/multiply-direct")
-def multiply_direct_alias(body: MultiplyViaWebhookRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user_id)):
-    return multiply_via_webhook(body, background_tasks, user_id)
-
-
-@app.get("/upload/multiply-direct/status")
-def multiply_direct_status_alias():
-    return multiply_status()
 
 
 # ── N8n Callback ──────────────────────────────────────────────────────────────
