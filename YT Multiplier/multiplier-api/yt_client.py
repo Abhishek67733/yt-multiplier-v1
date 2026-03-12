@@ -138,31 +138,43 @@ def get_video_stats(video_url: str) -> dict:
 
 def download_video_bytes(video_url: str, dest_path: str) -> str:
     """
-    Download a video file. Uses external API if available, otherwise yt-dlp directly.
+    Download a video file using yt-dlp directly (our container has ffmpeg).
+    Falls back to external API /direct-url if yt-dlp CLI is not available.
     Returns the path to the downloaded file.
     """
+    # Always prefer direct yt-dlp (our container has ffmpeg for merging)
+    try:
+        _run_ytdlp([
+            "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--merge-output-format", "mp4",
+            "-o", dest_path,
+            "--no-playlist",
+            video_url,
+        ], timeout=300)
+
+        if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000:
+            return dest_path
+    except Exception as e:
+        print(f"[yt_client] Direct yt-dlp download failed: {e}")
+
+    # Fallback: use external API /direct-url to get a CDN link, then download it
     if _use_external_api():
-        url = f"{YT_DLP_BASE}/video"
-        with httpx.stream("GET", url, params={"url": video_url}, timeout=300) as resp:
-            resp.raise_for_status()
-            with open(dest_path, "wb") as f:
-                for chunk in resp.iter_bytes(chunk_size=8192):
-                    f.write(chunk)
-        return dest_path
+        try:
+            print(f"[yt_client] Trying external API /direct-url fallback...")
+            data = _get("/direct-url", {"url": video_url})
+            direct_url = data.get("direct_url")
+            if direct_url:
+                with httpx.stream("GET", direct_url, timeout=300, follow_redirects=True) as resp:
+                    resp.raise_for_status()
+                    with open(dest_path, "wb") as f:
+                        for chunk in resp.iter_bytes(chunk_size=8192):
+                            f.write(chunk)
+                if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000:
+                    return dest_path
+        except Exception as e:
+            print(f"[yt_client] External API fallback also failed: {e}")
 
-    # Direct yt-dlp download
-    _run_ytdlp([
-        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "--merge-output-format", "mp4",
-        "-o", dest_path,
-        "--no-playlist",
-        video_url,
-    ], timeout=300)
-
-    if not os.path.exists(dest_path):
-        raise RuntimeError(f"yt-dlp download produced no file at {dest_path}")
-
-    return dest_path
+    raise RuntimeError(f"All download methods failed for {video_url}")
 
 
 def channel_info(channel_url: str) -> dict:
