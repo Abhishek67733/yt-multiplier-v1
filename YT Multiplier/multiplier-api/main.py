@@ -551,15 +551,20 @@ MULTIPLIER_THRESHOLD = int(os.getenv("MULTIPLIER_THRESHOLD", "1000"))
 
 @app.get("/shorts/multiplier-room")
 def multiplier_room(user_id: str = Depends(get_user_id)):
-    shorts_result = supabase.table("shorts").select("*, source_channels(name)").eq("user_id", user_id).gte("views_delta", MULTIPLIER_THRESHOLD).neq("status", "done").order("velocity_score", desc=True).execute()
+    shorts_result = supabase.table("shorts").select("*").eq("user_id", user_id).gte("views_delta", MULTIPLIER_THRESHOLD).neq("status", "done").order("velocity_score", desc=True).execute()
+
+    # Build channel name lookup
+    channel_ids = list({r.get("channel_id") for r in shorts_result.data if r.get("channel_id")})
+    channel_names = {}
+    if channel_ids:
+        ch_rows = supabase.table("source_channels").select("id, name").in_("id", channel_ids).execute().data
+        channel_names = {c["id"]: c["name"] for c in ch_rows}
 
     result = []
     for r in shorts_result.data:
-        r["channel_name"] = r.get("source_channels", {}).get("name", "") if r.get("source_channels") else ""
+        r["channel_name"] = channel_names.get(r.get("channel_id"), "")
         titles_result = supabase.table("ai_titles").select("id, title").eq("video_id", r["video_id"]).eq("user_id", user_id).order("generated_at", desc=True).execute()
         r["ai_titles"] = titles_result.data
-        if "source_channels" in r:
-            del r["source_channels"]
         result.append(r)
     return result
 
@@ -696,14 +701,25 @@ def bulk_multiplier(body: BulkMultiplierRequest, background_tasks: BackgroundTas
 
 @app.get("/upload/jobs")
 def list_upload_jobs(user_id: str = Depends(get_user_id)):
-    result = supabase.table("upload_jobs").select("*, shorts(title, thumbnail), target_channels(channel_name)").eq("user_id", user_id).order("scheduled_at").execute()
+    result = supabase.table("upload_jobs").select("*").eq("user_id", user_id).order("scheduled_at").execute()
+    # Build lookups for shorts and target channels
+    video_ids = list({r.get("video_id") for r in result.data if r.get("video_id")})
+    target_ids = list({r.get("target_channel_id") for r in result.data if r.get("target_channel_id")})
+    shorts_map = {}
+    if video_ids:
+        s_rows = supabase.table("shorts").select("video_id, title, thumbnail").in_("video_id", video_ids).execute().data
+        shorts_map = {s["video_id"]: s for s in s_rows}
+    targets_map = {}
+    if target_ids:
+        t_rows = supabase.table("target_channels").select("id, channel_name").in_("id", target_ids).execute().data
+        targets_map = {t["id"]: t for t in t_rows}
     jobs = []
     for r in result.data:
-        r["short_title"] = r.get("shorts", {}).get("title", "") if r.get("shorts") else ""
-        r["short_thumbnail"] = r.get("shorts", {}).get("thumbnail", "") if r.get("shorts") else ""
-        r["channel_name"] = r.get("target_channels", {}).get("channel_name", "") if r.get("target_channels") else ""
-        r.pop("shorts", None)
-        r.pop("target_channels", None)
+        s = shorts_map.get(r.get("video_id"), {})
+        r["short_title"] = s.get("title", "")
+        r["short_thumbnail"] = s.get("thumbnail", "")
+        t = targets_map.get(r.get("target_channel_id"), {})
+        r["channel_name"] = t.get("channel_name", "")
         jobs.append(r)
     return jobs
 
@@ -721,12 +737,15 @@ def execute_upload(job_id: int, background_tasks: BackgroundTasks, user_id: str 
 
 
 def _run_upload(job_id: int, user_id: str):
-    job_data = supabase.table("upload_jobs").select("*, shorts(title, description, url), target_channels(oauth_credentials, id)").eq("id", job_id).execute().data
+    job_data = supabase.table("upload_jobs").select("*").eq("id", job_id).execute().data
     if not job_data:
         return
     job = job_data[0]
-    short_info = job.get("shorts") or {}
-    tc_info = job.get("target_channels") or {}
+    # Fetch short and target channel info separately
+    short_rows = supabase.table("shorts").select("title, description, url").eq("video_id", job.get("video_id", "")).limit(1).execute().data
+    short_info = short_rows[0] if short_rows else {}
+    tc_rows = supabase.table("target_channels").select("oauth_credentials, id").eq("id", job.get("target_channel_id", "")).limit(1).execute().data
+    tc_info = tc_rows[0] if tc_rows else {}
 
     try:
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
@@ -1213,13 +1232,25 @@ def webhook_logs_summary(user_id: str = Depends(get_user_id)):
 
 @app.get("/reach/stats")
 def get_reach_stats(user_id: str = Depends(get_user_id)):
-    jobs_done = supabase.table("upload_jobs").select("id, video_id, youtube_video_id, target_channel_id, uploaded_at, target_channels(channel_name), shorts(title, views_last_check, thumbnail)").eq("user_id", user_id).eq("status", "done").not_.is_("youtube_video_id", "null").execute().data
+    jobs_done = supabase.table("upload_jobs").select("id, video_id, youtube_video_id, target_channel_id, uploaded_at").eq("user_id", user_id).eq("status", "done").not_.is_("youtube_video_id", "null").execute().data
+
+    # Build lookups
+    video_ids = list({r["video_id"] for r in jobs_done if r.get("video_id")})
+    target_ids = list({r["target_channel_id"] for r in jobs_done if r.get("target_channel_id")})
+    shorts_map = {}
+    if video_ids:
+        s_rows = supabase.table("shorts").select("video_id, title, views_last_check, thumbnail").in_("video_id", video_ids).execute().data
+        shorts_map = {s["video_id"]: s for s in s_rows}
+    targets_map = {}
+    if target_ids:
+        t_rows = supabase.table("target_channels").select("id, channel_name").in_("id", target_ids).execute().data
+        targets_map = {t["id"]: t for t in t_rows}
 
     result = {}
     for row in jobs_done:
         vid = row["video_id"]
-        s = row.get("shorts") or {}
-        tc = row.get("target_channels") or {}
+        s = shorts_map.get(vid, {})
+        tc = targets_map.get(row.get("target_channel_id"), {})
         if vid not in result:
             result[vid] = {
                 "video_id": vid,
@@ -1255,11 +1286,17 @@ def refresh_reach_stats(background_tasks: BackgroundTasks, user_id: str = Depend
 
 
 def _refresh_stats(user_id: str):
-    jobs = supabase.table("upload_jobs").select("id, youtube_video_id, target_channels(oauth_credentials)").eq("user_id", user_id).eq("status", "done").not_.is_("youtube_video_id", "null").execute().data
+    jobs = supabase.table("upload_jobs").select("id, youtube_video_id, target_channel_id").eq("user_id", user_id).eq("status", "done").not_.is_("youtube_video_id", "null").execute().data
+    # Build target channel lookup
+    tc_ids = list({j["target_channel_id"] for j in jobs if j.get("target_channel_id")})
+    tc_map = {}
+    if tc_ids:
+        tc_rows = supabase.table("target_channels").select("id, oauth_credentials").in_("id", tc_ids).execute().data
+        tc_map = {t["id"]: t for t in tc_rows}
 
     for job in jobs:
         try:
-            tc = job.get("target_channels") or {}
+            tc = tc_map.get(job.get("target_channel_id"), {})
             oauth_creds = tc.get("oauth_credentials")
             if isinstance(oauth_creds, str):
                 oauth_creds = json.loads(oauth_creds)
