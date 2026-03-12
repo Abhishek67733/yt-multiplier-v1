@@ -5,6 +5,7 @@ import tempfile
 import traceback
 import math
 import random
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -12,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import httpx
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
@@ -20,12 +21,11 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build as google_build
 from google.oauth2.credentials import Credentials
 
-from database import init_db, db
+from database import supabase
 from yt_client import get_channel_shorts, channel_info, get_video_stats, download_video_bytes
 from caption_ai import generate_caption_variation, generate_title_variation
 from youtube_upload import upload_short, get_video_stats_from_api
 from video_processor import process_video, get_processing_info
-from scheduler import start_scheduler, stop_scheduler
 
 WEBHOOK_URL = os.getenv(
     "WEBHOOK_URL",
@@ -33,11 +33,10 @@ WEBHOOK_URL = os.getenv(
 )
 
 # ── IST Peak Hours for smart scheduling ──────────────────────────────────────
-# Peak YouTube viewing hours in India (IST = UTC+5:30)
-PEAK_HOURS_IST = [12, 13, 18, 19, 20, 21]  # 12-2 PM, 6-10 PM IST
+PEAK_HOURS_IST = [12, 13, 18, 19, 20, 21]
 IST_OFFSET = timedelta(hours=5, minutes=30)
 
-app = FastAPI(title="YouTube Shorts Multiplier API", version="1.0.0")
+app = FastAPI(title="YouTube Shorts Multiplier API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,46 +56,56 @@ YOUTUBE_SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
 ]
 
-# Store PKCE code_verifier keyed by state so the callback can retrieve it
-_oauth_pending: dict[str, str] = {}  # state -> code_verifier
 
-def _build_oauth_flow(state: str = None) -> Flow:
-    """Build a Google OAuth flow for YouTube channel connection."""
-    redirect_uri = OAUTH_REDIRECT_URI
-    if not redirect_uri:
-        # Auto-detect: use PORT env var if available (Railway sets this)
-        port = os.getenv("PORT", "8001")
-        base = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
-        if base:
-            redirect_uri = f"https://{base}/auth/youtube/callback"
-        else:
-            redirect_uri = f"http://localhost:{port}/auth/youtube/callback"
-    flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": GOOGLE_CLIENT_ID,
-                "client_secret": GOOGLE_CLIENT_SECRET,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": [redirect_uri],
-            }
-        },
-        scopes=YOUTUBE_SCOPES,
-        state=state,
-    )
-    flow.redirect_uri = redirect_uri
-    return flow
+# ── User Resolution ──────────────────────────────────────────────────────────
+
+DEFAULT_USER_ID: str | None = None
+
+def _ensure_default_user() -> str:
+    """Create or fetch a default user on startup."""
+    global DEFAULT_USER_ID
+    if DEFAULT_USER_ID:
+        return DEFAULT_USER_ID
+    # Check if any user exists
+    existing = supabase.table("users").select("id").limit(1).execute().data
+    if existing:
+        DEFAULT_USER_ID = existing[0]["id"]
+    else:
+        result = supabase.table("users").insert({"email": "default@ytmultiplier.app", "name": "Default User"}).execute()
+        DEFAULT_USER_ID = result.data[0]["id"]
+    return DEFAULT_USER_ID
+
+
+def get_user_id(x_user_id: str = Header(None)) -> str:
+    """Get user_id from x-user-id header, or fall back to default user."""
+    if x_user_id:
+        # Validate it exists
+        existing = supabase.table("users").select("id").eq("id", x_user_id).execute().data
+        if existing:
+            return existing[0]["id"]
+    return _ensure_default_user()
+
+
+def get_optional_user_id(x_user_id: str = Header(None)) -> Optional[str]:
+    """Same as get_user_id but never raises."""
+    try:
+        return get_user_id(x_user_id)
+    except Exception:
+        return None
+
 
 # ── Startup ────────────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
 def startup():
-    init_db()
+    _ensure_default_user()
+    from scheduler import start_scheduler
     start_scheduler()
 
 
 @app.on_event("shutdown")
 def shutdown():
+    from scheduler import stop_scheduler
     stop_scheduler()
 
 
@@ -105,93 +114,112 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/auth/me")
+def get_or_create_me():
+    """Return current user_id. Creates a default user if none exists."""
+    uid = _ensure_default_user()
+    return {"user_id": uid}
+
+
+class IdentifyRequest(BaseModel):
+    email: str
+    name: str | None = None
+    avatar_url: str | None = None
+
+
+@app.post("/auth/identify")
+def identify_user(body: IdentifyRequest):
+    """Update the default user with real email/name from NextAuth session."""
+    uid = _ensure_default_user()
+    update = {"email": body.email}
+    if body.name:
+        update["name"] = body.name
+    if body.avatar_url:
+        update["avatar_url"] = body.avatar_url
+    supabase.table("users").update(update).eq("id", uid).execute()
+    return {"user_id": uid, "email": body.email}
+
+
 # ── Request / Response Models ──────────────────────────────────────────────────
 
 class AddSourceChannel(BaseModel):
-    url: str  # YouTube channel URL
+    url: str
 
 class AddTargetChannel(BaseModel):
     channel_name: str
-    oauth_credentials: dict  # full OAuth token dict
+    oauth_credentials: dict
 
 class StartUploadRequest(BaseModel):
     video_id: str
-    n_channels: int  # 1–5
-    gap_hours: float  # hours between each upload
+    n_channels: int
+    gap_hours: float
 
 class BulkMultiplierRequest(BaseModel):
-    video_ids: list[str]  # list of short video_ids
-    n_channels: int  # per-video channel count
-    gap_hours: float  # gap between uploads per video
-    duration_hours: float  # total campaign duration
+    video_ids: list[str]
+    n_channels: int
+    gap_hours: float
+    duration_hours: float
 
 class WebhookTestRequest(BaseModel):
-    video_ids: list[str]  # shorts to test-upload
-    n_channels: int = 30  # simulate sending to N channels
-    process_video: bool = True  # apply ffmpeg fingerprint avoidance
-    use_peak_hours: bool = True  # schedule during IST peak hours
+    video_ids: list[str]
+    n_channels: int = 30
+    process_video: bool = True
+    use_peak_hours: bool = True
 
-class MultiplyDirectRequest(BaseModel):
+class MultiplyViaWebhookRequest(BaseModel):
     video_ids: list[str]
     n_channels: int = 5
+    gap_hours: float = 2
     process_video: bool = True
+    use_peak_hours: bool = True
 
 
 # ── Source Channels ────────────────────────────────────────────────────────────
 
 @app.get("/channels/source")
-def list_source_channels():
-    with db() as conn:
-        rows = conn.execute("SELECT * FROM source_channels ORDER BY added_at DESC").fetchall()
-    return [dict(r) for r in rows]
+def list_source_channels(user_id: str = Depends(get_user_id)):
+    result = supabase.table("source_channels").select("*").eq("user_id", user_id).order("added_at", desc=True).execute()
+    return result.data
 
 
 @app.post("/channels/source", status_code=201)
-def add_source_channel(body: AddSourceChannel):
-    # Try to resolve channel info from yt-dlp API — fall back gracefully if unavailable
+def add_source_channel(body: AddSourceChannel, user_id: str = Depends(get_user_id)):
     try:
         info = channel_info(body.url)
     except Exception:
         info = {"channel_id": "", "name": "", "thumbnail": ""}
 
-    channel_id = info.get("channel_id") or body.url  # fallback to URL as ID
+    channel_id = info.get("channel_id") or body.url
     name = info.get("name") or body.url
     thumbnail = info.get("thumbnail") or ""
 
-    with db() as conn:
-        existing = conn.execute(
-            "SELECT id FROM source_channels WHERE id=? OR url=?", (channel_id, body.url)
-        ).fetchone()
-        if existing:
-            raise HTTPException(400, "Channel already added")
-        conn.execute(
-            "INSERT INTO source_channels (id, name, url, thumbnail) VALUES (?,?,?,?)",
-            (channel_id, name, body.url, thumbnail),
-        )
+    existing = supabase.table("source_channels").select("id").eq("user_id", user_id).or_(f"id.eq.{channel_id},url.eq.{body.url}").execute()
+    if existing.data:
+        raise HTTPException(400, "Channel already added")
+
+    supabase.table("source_channels").insert({
+        "id": channel_id,
+        "user_id": user_id,
+        "name": name,
+        "url": body.url,
+        "thumbnail": thumbnail,
+    }).execute()
     return {"id": channel_id, "name": name, "url": body.url}
 
 
 @app.post("/channels/source/enrich")
-def enrich_source_channels():
-    """Re-fetch name + thumbnail for all source channels from yt-dlp API."""
-    import httpx as _httpx
+def enrich_source_channels(user_id: str = Depends(get_user_id)):
     YT_DLP_BASE = os.getenv("YT_DLP_API_BASE_URL", "http://localhost:8000")
-    with db() as conn:
-        rows = conn.execute("SELECT id, url FROM source_channels").fetchall()
+    rows = supabase.table("source_channels").select("id, url").eq("user_id", user_id).execute().data
     updated = 0
     for row in rows:
         try:
-            resp = _httpx.get(f"{YT_DLP_BASE}/channel/list", params={"url": row["url"], "limit": 1}, timeout=30)
+            resp = httpx.get(f"{YT_DLP_BASE}/channel/list", params={"url": row["url"], "limit": 1}, timeout=30)
             data = resp.json()
-            # /channel/list returns {"channel": "Channel Name", ...}
             name = data.get("channel") or data.get("channel_name") or data.get("uploader") or ""
             thumbnail = data.get("thumbnail") or ""
             if name:
-                with db() as conn:
-                    conn.execute(
-                        "UPDATE source_channels SET name=?, thumbnail=? WHERE id=?",
-                        (name, thumbnail, row["id"]),
-                    )
+                supabase.table("source_channels").update({"name": name, "thumbnail": thumbnail}).eq("id", row["id"]).eq("user_id", user_id).execute()
                 updated += 1
         except Exception:
             pass
@@ -199,54 +227,75 @@ def enrich_source_channels():
 
 
 @app.delete("/channels/source/{channel_id}", status_code=204)
-def remove_source_channel(channel_id: str):
-    with db() as conn:
-        conn.execute("DELETE FROM source_channels WHERE id=?", (channel_id,))
+def remove_source_channel(channel_id: str, user_id: str = Depends(get_user_id)):
+    supabase.table("source_channels").delete().eq("id", channel_id).eq("user_id", user_id).execute()
 
 
 # ── YouTube OAuth Connect Flow ─────────────────────────────────────────────────
 
 @app.get("/auth/youtube/connect")
-def youtube_oauth_connect():
-    """Step 1: Return Google OAuth consent screen URL."""
+def youtube_oauth_connect(x_user_id: str = Header(None)):
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(500, "Google OAuth credentials not configured on the server")
 
-    flow = _build_oauth_flow()
-    auth_url, state = flow.authorization_url(
-        access_type="offline",
-        prompt="consent",
-        include_granted_scopes="true",
+    redirect_uri = OAUTH_REDIRECT_URI or "http://localhost:8001/auth/youtube/callback"
+    scopes = " ".join(YOUTUBE_SCOPES)
+    state_data = x_user_id or _ensure_default_user()
+    state = secrets.token_urlsafe(22)
+    # Store user_id in state so callback can resolve user
+    # Format: random_token|user_id
+    combined_state = f"{state}|{state_data}"
+    auth_url = (
+        f"https://accounts.google.com/o/oauth2/auth"
+        f"?response_type=code"
+        f"&client_id={GOOGLE_CLIENT_ID}"
+        f"&redirect_uri={redirect_uri}"
+        f"&scope={scopes}"
+        f"&access_type=offline"
+        f"&prompt=consent"
+        f"&state={combined_state}"
     )
-    # Store the PKCE code_verifier so the callback can use it
-    _oauth_pending[state] = flow.code_verifier
-    return {"auth_url": auth_url, "state": state}
+    return {"auth_url": auth_url, "state": combined_state}
 
 
 @app.get("/auth/youtube/callback")
 def youtube_oauth_callback(code: str = Query(...), state: str = Query(None)):
-    """Step 2: Google redirects here. Exchange code for tokens, store channel."""
     try:
-        flow = _build_oauth_flow(state=state)
-        # Restore the PKCE code_verifier from the original request
-        code_verifier = _oauth_pending.pop(state, None)
-        if code_verifier:
-            flow.code_verifier = code_verifier
-        flow.fetch_token(code=code)
-        creds = flow.credentials
+        user_id_from_state = ""
+        if state and "|" in state:
+            _, user_id_from_state = state.split("|", 1)
+
+        redirect_uri = OAUTH_REDIRECT_URI or "http://localhost:8001/auth/youtube/callback"
+        token_resp = httpx.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        })
+        token_data = token_resp.json()
+        if "error" in token_data:
+            raise Exception(f"{token_data['error']}: {token_data.get('error_description', '')}")
+
+        creds = Credentials(
+            token=token_data["access_token"],
+            refresh_token=token_data.get("refresh_token"),
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=GOOGLE_CLIENT_ID,
+            client_secret=GOOGLE_CLIENT_SECRET,
+        )
 
         youtube = google_build("youtube", "v3", credentials=creds)
         channels_resp = youtube.channels().list(part="snippet", mine=True).execute()
         items = channels_resp.get("items", [])
 
         if not items:
-            return RedirectResponse(
-                f"{FRONTEND_URL}/dashboard?youtube_connect=error&reason=no_channel"
-            )
+            return RedirectResponse(f"{FRONTEND_URL}/dashboard?youtube_connect=error&reason=no_channel")
 
         channel = items[0]
         channel_name = channel["snippet"]["title"]
         channel_id = channel["id"]
+
         creds_data = {
             "token": creds.token,
             "refresh_token": creds.refresh_token,
@@ -254,115 +303,91 @@ def youtube_oauth_callback(code: str = Query(...), state: str = Query(None)):
             "client_id": creds.client_id,
             "client_secret": creds.client_secret,
         }
-        creds_json = json.dumps(creds_data)
 
-        with db() as conn:
-            existing = conn.execute(
-                "SELECT id FROM target_channels WHERE channel_id = ?", (channel_id,)
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    "UPDATE target_channels SET oauth_credentials = ?, channel_name = ? WHERE id = ?",
-                    (creds_json, channel_name, existing["id"]),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO target_channels (channel_name, channel_id, oauth_credentials) VALUES (?, ?, ?)",
-                    (channel_name, channel_id, creds_json),
-                )
+        # Resolve user
+        user_id = user_id_from_state or _ensure_default_user()
 
-        return RedirectResponse(
-            f"{FRONTEND_URL}/dashboard?youtube_connect=success&channel={channel_name}"
-        )
+        # Upsert target channel
+        existing = supabase.table("target_channels").select("id").eq("channel_id", channel_id).eq("user_id", user_id).execute()
+        if existing.data:
+            supabase.table("target_channels").update({
+                "oauth_credentials": creds_data,
+                "channel_name": channel_name,
+            }).eq("id", existing.data[0]["id"]).execute()
+        else:
+            supabase.table("target_channels").insert({
+                "user_id": user_id,
+                "channel_name": channel_name,
+                "channel_id": channel_id,
+                "oauth_credentials": creds_data,
+            }).execute()
+
+        return RedirectResponse(f"{FRONTEND_URL}/dashboard?youtube_connect=success&channel={channel_name}")
 
     except Exception as e:
-        return RedirectResponse(
-            f"{FRONTEND_URL}/dashboard?youtube_connect=error&reason={str(e)[:100]}"
-        )
+        print(f"[oauth] Callback error: {traceback.format_exc()}")
+        return RedirectResponse(f"{FRONTEND_URL}/dashboard?youtube_connect=error&reason={str(e)[:100]}")
 
 
 # ── Target Channels ────────────────────────────────────────────────────────────
 
 @app.get("/channels/target")
-def list_target_channels():
-    with db() as conn:
-        rows = conn.execute("SELECT id, channel_name, channel_id, upload_count, added_at FROM target_channels").fetchall()
-    return [dict(r) for r in rows]
+def list_target_channels(user_id: str = Depends(get_user_id)):
+    result = supabase.table("target_channels").select("id, channel_name, channel_id, upload_count, added_at").eq("user_id", user_id).execute()
+    return result.data
 
 
 @app.post("/channels/target", status_code=201)
-def add_target_channel(body: AddTargetChannel):
-    creds_json = json.dumps(body.oauth_credentials)
-    with db() as conn:
-        cur = conn.execute(
-            "INSERT INTO target_channels (channel_name, oauth_credentials) VALUES (?,?)",
-            (body.channel_name, creds_json),
-        )
-    return {"id": cur.lastrowid, "channel_name": body.channel_name}
+def add_target_channel(body: AddTargetChannel, user_id: str = Depends(get_user_id)):
+    result = supabase.table("target_channels").insert({
+        "user_id": user_id,
+        "channel_name": body.channel_name,
+        "oauth_credentials": body.oauth_credentials,
+    }).execute()
+    row = result.data[0]
+    return {"id": row["id"], "channel_name": body.channel_name}
 
 
 @app.delete("/channels/target/{channel_id}", status_code=204)
-def remove_target_channel(channel_id: int):
-    with db() as conn:
-        conn.execute("DELETE FROM target_channels WHERE id=?", (channel_id,))
+def remove_target_channel(channel_id: int, user_id: str = Depends(get_user_id)):
+    supabase.table("target_channels").delete().eq("id", channel_id).eq("user_id", user_id).execute()
 
 
 # ── Shorts Scan ────────────────────────────────────────────────────────────────
 
 VIEWS_THRESHOLD = int(os.getenv("VIEWS_THRESHOLD", "500"))
-
-# Shared scan state
 _scan_state: dict = {"running": False, "last_result": None}
 
+
 @app.post("/shorts/scan")
-def scan_shorts(background_tasks: BackgroundTasks):
-    """
-    Trigger a scan of all source channels.
-    Runs in background — returns immediately.
-    Poll /shorts/scan/status for progress.
-    """
+def scan_shorts(background_tasks: BackgroundTasks, user_id: str = Depends(get_user_id)):
     if _scan_state["running"]:
         return {"status": "already_running"}
     _scan_state["running"] = True
     _scan_state["last_result"] = None
-    background_tasks.add_task(_run_scan)
+    background_tasks.add_task(_run_scan, user_id)
     return {"status": "scan_started"}
 
 
 @app.get("/shorts/scan/status")
 def scan_status():
-    return {
-        "running": _scan_state["running"],
-        "last_result": _scan_state["last_result"],
-    }
+    return {"running": _scan_state["running"], "last_result": _scan_state["last_result"]}
 
 
-def _calculate_velocity(views_now: int, views_discovery: int, published: str,
-                        scan_history: list, delta: int) -> tuple:
-    """
-    Calculate velocity score and trend.
-    Returns (velocity_score, growth_rate, trend).
-
-    velocity_score = growth_rate * relative_gain
-    growth_rate    = views_delta / hours_since_published
-    trend          = accelerating | stable | decelerating | flat
-    """
-    # Hours since published
-    hours_alive = 24.0  # default
-    if published and len(published) >= 8:
+def _calculate_velocity(views_now, views_discovery, published, scan_history, delta):
+    hours_alive = 24.0
+    if published and len(str(published)) >= 8:
         try:
-            pub_str = published[:8]
-            pub_date = datetime(int(pub_str[:4]), int(pub_str[4:6]), int(pub_str[6:8]),
-                                tzinfo=timezone.utc)
+            pub_str = str(published)[:8]
+            pub_date = datetime(int(pub_str[:4]), int(pub_str[4:6]), int(pub_str[6:8]), tzinfo=timezone.utc)
             hours_alive = max((datetime.now(timezone.utc) - pub_date).total_seconds() / 3600, 1)
         except Exception:
             pass
 
     growth_rate = delta / max(hours_alive, 1)
     relative_gain = delta / max(views_discovery, 1)
-    velocity_score = growth_rate * relative_gain * 100  # scale up for readability
+    velocity_score = growth_rate * relative_gain * 100
 
-    # Trend detection from scan history (list of deltas)
     trend = "flat"
     if len(scan_history) >= 2:
         recent = scan_history[-2:]
@@ -378,11 +403,9 @@ def _calculate_velocity(views_now: int, views_discovery: int, published: str,
     return round(velocity_score, 2), round(growth_rate, 2), trend
 
 
-def _run_scan():
+def _run_scan(user_id: str):
     try:
-        with db() as conn:
-            channels = conn.execute("SELECT id, url FROM source_channels").fetchall()
-
+        channels = supabase.table("source_channels").select("id, url").eq("user_id", user_id).execute().data
         errors = []
         new_count = 0
         queued_count = 0
@@ -403,77 +426,67 @@ def _run_scan():
                 views_now = int(s.get("views") or s.get("view_count") or 0)
                 duration = int(s.get("duration") or s.get("duration_seconds") or 0)
                 short_url = s.get("url") or f"https://www.youtube.com/shorts/{vid_id}"
+                published = s.get("upload_date") or ""
 
-                published = s.get("upload_date") or ""  # YYYYMMDD from yt-dlp
+                existing = supabase.table("shorts").select("video_id, views_last_check, views_at_discovery, scan_history").eq("video_id", vid_id).eq("user_id", user_id).execute().data
 
-                with db() as conn:
-                    existing = conn.execute(
-                        "SELECT video_id, views_last_check, views_at_discovery, scan_history FROM shorts WHERE video_id=?", (vid_id,)
-                    ).fetchone()
-
-                    if not existing:
-                        conn.execute(
-                            """INSERT INTO shorts
-                               (video_id, channel_id, title, url, description, views_at_discovery,
-                                views_last_check, views_delta, likes, comments, duration, thumbnail,
-                                published_at, last_checked, scan_history)
-                               VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,datetime('now'),'[]')""",
-                            (
-                                vid_id, ch["id"],
-                                s.get("title", ""), short_url,
-                                s.get("description", ""),
-                                views_now, views_now,
-                                int(s.get("likes") or 0),
-                                int(s.get("comments") or 0),
-                                duration,
-                                s.get("thumbnail", ""),
-                                published,
-                            ),
-                        )
-                        new_count += 1
-                    else:
-                        delta = views_now - (existing["views_last_check"] or 0)
-
-                        # Update scan history for trend detection
+                if not existing:
+                    supabase.table("shorts").insert({
+                        "video_id": vid_id,
+                        "user_id": user_id,
+                        "channel_id": ch["id"],
+                        "title": s.get("title", ""),
+                        "url": short_url,
+                        "description": s.get("description", ""),
+                        "views_at_discovery": views_now,
+                        "views_last_check": views_now,
+                        "views_delta": 0,
+                        "likes": int(s.get("likes") or 0),
+                        "comments": int(s.get("comments") or 0),
+                        "duration": duration,
+                        "thumbnail": s.get("thumbnail", ""),
+                        "published_at": published,
+                        "scan_history": [],
+                    }).execute()
+                    new_count += 1
+                else:
+                    row = existing[0]
+                    delta = views_now - (row["views_last_check"] or 0)
+                    history = row.get("scan_history") or []
+                    if isinstance(history, str):
                         try:
-                            history = json.loads(existing["scan_history"] or "[]")
+                            history = json.loads(history)
                         except Exception:
                             history = []
-                        history.append(delta)
-                        history = history[-10:]  # keep last 10 scans
+                    history.append(delta)
+                    history = history[-10:]
 
-                        # Calculate velocity
-                        vel_score, growth_rate, trend = _calculate_velocity(
-                            views_now, existing["views_at_discovery"] or 1,
-                            published, history, delta
-                        )
+                    vel_score, growth_rate, trend = _calculate_velocity(
+                        views_now, row["views_at_discovery"] or 1, published, history, delta
+                    )
 
-                        new_status = "queued" if delta >= VIEWS_THRESHOLD else "monitoring"
-                        conn.execute(
-                            """UPDATE shorts SET views_last_check=?, views_delta=?, likes=?,
-                               comments=?, last_checked=datetime('now'),
-                               velocity_score=?, growth_rate=?, trend=?,
-                               scan_history=?,
-                               status=CASE WHEN status='done' THEN 'done' ELSE ? END
-                               WHERE video_id=?""",
-                            (
-                                views_now, delta,
-                                int(s.get("likes") or 0),
-                                int(s.get("comments") or 0),
-                                vel_score, growth_rate, trend,
-                                json.dumps(history),
-                                new_status, vid_id,
-                            ),
-                        )
-                        if new_status == "queued":
-                            queued_count += 1
+                    new_status = "queued" if delta >= VIEWS_THRESHOLD else "monitoring"
+                    update_data = {
+                        "views_last_check": views_now,
+                        "views_delta": delta,
+                        "likes": int(s.get("likes") or 0),
+                        "comments": int(s.get("comments") or 0),
+                        "last_checked": datetime.now(timezone.utc).isoformat(),
+                        "velocity_score": vel_score,
+                        "growth_rate": growth_rate,
+                        "trend": trend,
+                        "scan_history": history,
+                    }
+                    # Don't overwrite 'done' status
+                    current_status_result = supabase.table("shorts").select("status").eq("video_id", vid_id).eq("user_id", user_id).execute()
+                    if current_status_result.data and current_status_result.data[0]["status"] != "done":
+                        update_data["status"] = new_status
 
-        result = {
-            "channels_scanned": len(channels),
-            "new_shorts": new_count,
-            "queued_shorts": queued_count,
-            "errors": errors,
-        }
+                    supabase.table("shorts").update(update_data).eq("video_id", vid_id).eq("user_id", user_id).execute()
+                    if new_status == "queued":
+                        queued_count += 1
+
+        result = {"channels_scanned": len(channels), "new_shorts": new_count, "queued_shorts": queued_count, "errors": errors}
         print(f"[scan] Completed: {result}")
         _scan_state["last_result"] = result
 
@@ -487,121 +500,73 @@ def _run_scan():
 # ── Shorts Listing ─────────────────────────────────────────────────────────────
 
 @app.get("/shorts/all")
-def list_all_shorts(channel_id: Optional[str] = None):
-    with db() as conn:
-        if channel_id:
-            rows = conn.execute(
-                "SELECT * FROM shorts WHERE channel_id=? ORDER BY views_delta DESC", (channel_id,)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM shorts ORDER BY views_delta DESC"
-            ).fetchall()
-    return [dict(r) for r in rows]
+def list_all_shorts(channel_id: Optional[str] = None, user_id: str = Depends(get_user_id)):
+    q = supabase.table("shorts").select("*").eq("user_id", user_id)
+    if channel_id:
+        q = q.eq("channel_id", channel_id)
+    result = q.order("views_delta", desc=True).execute()
+    return result.data
 
 
 @app.get("/shorts/queue")
-def list_queued_shorts():
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM shorts WHERE status='queued' ORDER BY views_delta DESC"
-        ).fetchall()
-    return [dict(r) for r in rows]
+def list_queued_shorts(user_id: str = Depends(get_user_id)):
+    result = supabase.table("shorts").select("*").eq("user_id", user_id).eq("status", "queued").order("views_delta", desc=True).execute()
+    return result.data
 
 
 # ── Multiplier Room ───────────────────────────────────────────────────────────
 
 MULTIPLIER_THRESHOLD = int(os.getenv("MULTIPLIER_THRESHOLD", "1000"))
 
+
 @app.get("/shorts/multiplier-room")
-def multiplier_room():
-    """
-    Shorts with views_delta >= MULTIPLIER_THRESHOLD.
-    Sorted by velocity_score (smart) then views_delta (fallback).
-    Includes pre-generated AI title variations.
-    """
-    with db() as conn:
-        rows = conn.execute(
-            """SELECT s.*, sc.name as channel_name
-               FROM shorts s
-               LEFT JOIN source_channels sc ON sc.id = s.channel_id
-               WHERE s.views_delta >= ? AND s.status != 'done'
-               ORDER BY s.velocity_score DESC, s.views_delta DESC""",
-            (MULTIPLIER_THRESHOLD,),
-        ).fetchall()
+def multiplier_room(user_id: str = Depends(get_user_id)):
+    shorts_result = supabase.table("shorts").select("*, source_channels(name)").eq("user_id", user_id).gte("views_delta", MULTIPLIER_THRESHOLD).neq("status", "done").order("velocity_score", desc=True).execute()
 
-        result = []
-        for r in rows:
-            row = dict(r)
-            titles = conn.execute(
-                "SELECT id, title FROM ai_titles WHERE video_id=? ORDER BY generated_at DESC",
-                (row["video_id"],),
-            ).fetchall()
-            row["ai_titles"] = [{"id": t["id"], "title": t["title"]} for t in titles]
-            result.append(row)
-
+    result = []
+    for r in shorts_result.data:
+        r["channel_name"] = r.get("source_channels", {}).get("name", "") if r.get("source_channels") else ""
+        titles_result = supabase.table("ai_titles").select("id, title").eq("video_id", r["video_id"]).eq("user_id", user_id).order("generated_at", desc=True).execute()
+        r["ai_titles"] = titles_result.data
+        if "source_channels" in r:
+            del r["source_channels"]
+        result.append(r)
     return result
 
 
 @app.post("/shorts/{video_id}/generate-titles")
-def generate_titles_for_short(video_id: str):
-    """Generate 5 AI title variations for a short."""
-    with db() as conn:
-        short = conn.execute("SELECT title, description FROM shorts WHERE video_id=?", (video_id,)).fetchone()
-        if not short:
-            raise HTTPException(404, "Short not found")
+def generate_titles_for_short(video_id: str, user_id: str = Depends(get_user_id)):
+    short = supabase.table("shorts").select("title, description").eq("video_id", video_id).eq("user_id", user_id).execute().data
+    if not short:
+        raise HTTPException(404, "Short not found")
 
-    titles = []
-    for _ in range(5):
-        t = generate_title_variation(short["title"] or "Short Video")
-        titles.append(t)
+    titles = [generate_title_variation(short[0]["title"] or "Short Video") for _ in range(5)]
 
-    with db() as conn:
-        conn.execute("DELETE FROM ai_titles WHERE video_id=?", (video_id,))
-        for t in titles:
-            conn.execute(
-                "INSERT INTO ai_titles (video_id, title) VALUES (?,?)",
-                (video_id, t),
-            )
+    supabase.table("ai_titles").delete().eq("video_id", video_id).eq("user_id", user_id).execute()
+    for t in titles:
+        supabase.table("ai_titles").insert({"user_id": user_id, "video_id": video_id, "title": t}).execute()
 
     return {"video_id": video_id, "titles": titles}
 
 
 @app.post("/shorts/generate-all-titles")
-def generate_all_titles_in_room(background_tasks: BackgroundTasks):
-    """Generate AI titles for all shorts in the multiplier room."""
-    background_tasks.add_task(_generate_all_titles)
+def generate_all_titles_in_room(background_tasks: BackgroundTasks, user_id: str = Depends(get_user_id)):
+    background_tasks.add_task(_generate_all_titles, user_id)
     return {"status": "generation_started"}
 
 
-def _generate_all_titles():
-    with db() as conn:
-        shorts = conn.execute(
-            "SELECT video_id, title FROM shorts WHERE views_delta >= ? AND status != 'done'",
-            (MULTIPLIER_THRESHOLD,),
-        ).fetchall()
+def _generate_all_titles(user_id: str):
+    shorts = supabase.table("shorts").select("video_id, title").eq("user_id", user_id).gte("views_delta", MULTIPLIER_THRESHOLD).neq("status", "done").execute().data
 
     for s in shorts:
-        with db() as conn:
-            existing = conn.execute(
-                "SELECT COUNT(*) as cnt FROM ai_titles WHERE video_id=?", (s["video_id"],)
-            ).fetchone()
-            if existing["cnt"] >= 5:
-                continue
-
+        existing = supabase.table("ai_titles").select("id", count="exact").eq("video_id", s["video_id"]).eq("user_id", user_id).execute()
+        if existing.count and existing.count >= 5:
+            continue
         try:
-            titles = []
-            for _ in range(5):
-                t = generate_title_variation(s["title"] or "Short Video")
-                titles.append(t)
-
-            with db() as conn:
-                conn.execute("DELETE FROM ai_titles WHERE video_id=?", (s["video_id"],))
-                for t in titles:
-                    conn.execute(
-                        "INSERT INTO ai_titles (video_id, title) VALUES (?,?)",
-                        (s["video_id"], t),
-                    )
+            titles = [generate_title_variation(s["title"] or "Short Video") for _ in range(5)]
+            supabase.table("ai_titles").delete().eq("video_id", s["video_id"]).eq("user_id", user_id).execute()
+            for t in titles:
+                supabase.table("ai_titles").insert({"user_id": user_id, "video_id": s["video_id"], "title": t}).execute()
             print(f"[ai] Generated 5 titles for {s['video_id']}")
         except Exception as e:
             print(f"[ai] Failed for {s['video_id']}: {e}")
@@ -609,82 +574,57 @@ def _generate_all_titles():
 
 # ── Upload Jobs ────────────────────────────────────────────────────────────────
 
-def _smart_select_channels(conn, n: int, exclude_video_id: str = "") -> list:
-    """
-    Pick target channels smartly based on:
-    1. Least recent upload (last_upload_at ASC NULLS FIRST)
-    2. Lowest upload count as tiebreaker
-    3. Exclude channels that already have this video queued
-    """
-    rows = conn.execute(
-        """SELECT tc.id, tc.upload_count, tc.last_upload_at
-           FROM target_channels tc
-           WHERE tc.id NOT IN (
-               SELECT target_channel_id FROM upload_jobs
-               WHERE video_id = ? AND status IN ('pending', 'uploading', 'done')
-           )
-           ORDER BY
-               CASE WHEN tc.last_upload_at IS NULL THEN 0 ELSE 1 END,
-               tc.last_upload_at ASC,
-               tc.upload_count ASC
-           LIMIT ?""",
-        (exclude_video_id, n),
-    ).fetchall()
-    return rows
+def _smart_select_channels(user_id: str, n: int, exclude_video_id: str = "") -> list:
+    # Get channels not already assigned to this video
+    all_targets = supabase.table("target_channels").select("id, upload_count, last_upload_at").eq("user_id", user_id).order("last_upload_at", desc=False, nullsfirst=True).order("upload_count").execute().data
+
+    if exclude_video_id:
+        existing_jobs = supabase.table("upload_jobs").select("target_channel_id").eq("video_id", exclude_video_id).eq("user_id", user_id).in_("status", ["pending", "uploading", "done"]).execute().data
+        used_ids = {j["target_channel_id"] for j in existing_jobs}
+        all_targets = [t for t in all_targets if t["id"] not in used_ids]
+
+    return all_targets[:n]
 
 
 @app.post("/upload/start")
-def start_upload_campaign(body: StartUploadRequest):
-    """
-    Create upload_jobs for the given short spread across n_channels target channels,
-    with gap_hours between each scheduled upload.
-    Smart channel selection avoids spamming any single channel.
-    """
+def start_upload_campaign(body: StartUploadRequest, user_id: str = Depends(get_user_id)):
     if not (1 <= body.n_channels <= 5):
         raise HTTPException(400, "n_channels must be between 1 and 5")
 
-    with db() as conn:
-        short = conn.execute("SELECT * FROM shorts WHERE video_id=?", (body.video_id,)).fetchone()
-        if not short:
-            raise HTTPException(404, "Short not found")
+    short = supabase.table("shorts").select("*").eq("video_id", body.video_id).eq("user_id", user_id).execute().data
+    if not short:
+        raise HTTPException(404, "Short not found")
 
-        targets = _smart_select_channels(conn, body.n_channels, body.video_id)
+    targets = _smart_select_channels(user_id, body.n_channels, body.video_id)
+    if not targets:
+        raise HTTPException(400, "No target channels available")
 
-        if not targets:
-            raise HTTPException(400, "No target channels available (all may already have this video)")
-
-        created_jobs = []
-        now = datetime.now(timezone.utc)
-
-        for i, target in enumerate(targets):
-            scheduled = now + timedelta(hours=body.gap_hours * i)
-            try:
-                cur = conn.execute(
-                    """INSERT INTO upload_jobs (video_id, target_channel_id, scheduled_at)
-                       VALUES (?,?,?)""",
-                    (body.video_id, target["id"], scheduled.isoformat()),
-                )
-                created_jobs.append({
-                    "job_id": cur.lastrowid,
-                    "target_channel_id": target["id"],
-                    "scheduled_at": scheduled.isoformat(),
-                })
-            except Exception:
-                pass
+    created_jobs = []
+    now = datetime.now(timezone.utc)
+    for i, target in enumerate(targets):
+        scheduled = now + timedelta(hours=body.gap_hours * i)
+        try:
+            result = supabase.table("upload_jobs").insert({
+                "user_id": user_id,
+                "video_id": body.video_id,
+                "target_channel_id": target["id"],
+                "scheduled_at": scheduled.isoformat(),
+            }).execute()
+            created_jobs.append({
+                "job_id": result.data[0]["id"],
+                "target_channel_id": target["id"],
+                "scheduled_at": scheduled.isoformat(),
+            })
+        except Exception:
+            pass
 
     return {"jobs_created": len(created_jobs), "jobs": created_jobs}
 
 
 @app.post("/upload/bulk-multiplier")
-def bulk_multiplier(body: BulkMultiplierRequest, background_tasks: BackgroundTasks):
-    """
-    Schedule uploads for multiple shorts across channels.
-    Spreads them evenly over duration_hours, picking channels smartly.
-    """
+def bulk_multiplier(body: BulkMultiplierRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user_id)):
     if not body.video_ids:
         raise HTTPException(400, "No video_ids provided")
-    if not (1 <= body.n_channels <= 5):
-        raise HTTPException(400, "n_channels must be between 1 and 5")
 
     total_jobs = len(body.video_ids) * body.n_channels
     time_per_job = (body.duration_hours * 3600) / max(total_jobs, 1)
@@ -693,141 +633,116 @@ def bulk_multiplier(body: BulkMultiplierRequest, background_tasks: BackgroundTas
     now = datetime.now(timezone.utc)
     job_index = 0
 
-    with db() as conn:
-        targets_all = conn.execute(
-            "SELECT id, channel_name, upload_count, last_upload_at FROM target_channels"
-        ).fetchall()
-        if not targets_all:
-            raise HTTPException(400, "No target channels configured")
+    targets_all = supabase.table("target_channels").select("id").eq("user_id", user_id).execute().data
+    if not targets_all:
+        raise HTTPException(400, "No target channels configured")
 
-        for vid_id in body.video_ids:
-            short = conn.execute("SELECT video_id FROM shorts WHERE video_id=?", (vid_id,)).fetchone()
-            if not short:
-                continue
+    for vid_id in body.video_ids:
+        short = supabase.table("shorts").select("video_id").eq("video_id", vid_id).eq("user_id", user_id).execute().data
+        if not short:
+            continue
+        channels = _smart_select_channels(user_id, body.n_channels, vid_id)
+        for ch in channels:
+            scheduled = now + timedelta(seconds=time_per_job * job_index)
+            try:
+                result = supabase.table("upload_jobs").insert({
+                    "user_id": user_id,
+                    "video_id": vid_id,
+                    "target_channel_id": ch["id"],
+                    "scheduled_at": scheduled.isoformat(),
+                }).execute()
+                all_created.append({
+                    "job_id": result.data[0]["id"],
+                    "video_id": vid_id,
+                    "target_channel_id": ch["id"],
+                    "scheduled_at": scheduled.isoformat(),
+                })
+                job_index += 1
+            except Exception:
+                pass
 
-            channels = _smart_select_channels(conn, body.n_channels, vid_id)
-
-            for ch in channels:
-                scheduled = now + timedelta(seconds=time_per_job * job_index)
-                try:
-                    cur = conn.execute(
-                        """INSERT INTO upload_jobs (video_id, target_channel_id, scheduled_at)
-                           VALUES (?,?,?)""",
-                        (vid_id, ch["id"], scheduled.isoformat()),
-                    )
-                    all_created.append({
-                        "job_id": cur.lastrowid,
-                        "video_id": vid_id,
-                        "target_channel_id": ch["id"],
-                        "scheduled_at": scheduled.isoformat(),
-                    })
-                    job_index += 1
-                except Exception:
-                    pass
-
-    return {
-        "jobs_created": len(all_created),
-        "total_duration_hours": body.duration_hours,
-        "jobs": all_created,
-    }
+    return {"jobs_created": len(all_created), "total_duration_hours": body.duration_hours, "jobs": all_created}
 
 
 @app.get("/upload/jobs")
-def list_upload_jobs():
-    with db() as conn:
-        rows = conn.execute(
-            """SELECT uj.*, s.title as short_title, tc.channel_name,
-                      s.thumbnail as short_thumbnail
-               FROM upload_jobs uj
-               JOIN shorts s ON s.video_id = uj.video_id
-               JOIN target_channels tc ON tc.id = uj.target_channel_id
-               ORDER BY uj.scheduled_at ASC"""
-        ).fetchall()
-    return [dict(r) for r in rows]
+def list_upload_jobs(user_id: str = Depends(get_user_id)):
+    result = supabase.table("upload_jobs").select("*, shorts(title, thumbnail), target_channels(channel_name)").eq("user_id", user_id).order("scheduled_at").execute()
+    jobs = []
+    for r in result.data:
+        r["short_title"] = r.get("shorts", {}).get("title", "") if r.get("shorts") else ""
+        r["short_thumbnail"] = r.get("shorts", {}).get("thumbnail", "") if r.get("shorts") else ""
+        r["channel_name"] = r.get("target_channels", {}).get("channel_name", "") if r.get("target_channels") else ""
+        r.pop("shorts", None)
+        r.pop("target_channels", None)
+        jobs.append(r)
+    return jobs
 
 
 @app.post("/upload/execute/{job_id}")
-def execute_upload(job_id: int, background_tasks: BackgroundTasks):
-    """Trigger the actual download → caption → upload pipeline for a job."""
-    with db() as conn:
-        job = conn.execute("SELECT * FROM upload_jobs WHERE id=?", (job_id,)).fetchone()
-        if not job:
-            raise HTTPException(404, "Job not found")
-        if job["status"] not in ("pending", "failed"):
-            raise HTTPException(400, f"Job status is '{job['status']}', cannot execute")
-        conn.execute("UPDATE upload_jobs SET status='uploading' WHERE id=?", (job_id,))
-
-    background_tasks.add_task(_run_upload, job_id)
+def execute_upload(job_id: int, background_tasks: BackgroundTasks, user_id: str = Depends(get_user_id)):
+    job = supabase.table("upload_jobs").select("*").eq("id", job_id).eq("user_id", user_id).execute().data
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job[0]["status"] not in ("pending", "failed"):
+        raise HTTPException(400, f"Job status is '{job[0]['status']}', cannot execute")
+    supabase.table("upload_jobs").update({"status": "uploading"}).eq("id", job_id).execute()
+    background_tasks.add_task(_run_upload, job_id, user_id)
     return {"status": "upload_started", "job_id": job_id}
 
 
-def _run_upload(job_id: int):
-    with db() as conn:
-        job = conn.execute(
-            """SELECT uj.*, s.title, s.description, s.url as video_url,
-                      tc.oauth_credentials, tc.id as tc_id
-               FROM upload_jobs uj
-               JOIN shorts s ON s.video_id = uj.video_id
-               JOIN target_channels tc ON tc.id = uj.target_channel_id
-               WHERE uj.id=?""",
-            (job_id,),
-        ).fetchone()
-
-    if not job:
+def _run_upload(job_id: int, user_id: str):
+    job_data = supabase.table("upload_jobs").select("*, shorts(title, description, url), target_channels(oauth_credentials, id)").eq("id", job_id).execute().data
+    if not job_data:
         return
+    job = job_data[0]
+    short_info = job.get("shorts") or {}
+    tc_info = job.get("target_channels") or {}
 
     try:
-        # 1. Download video
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             tmp_path = tmp.name
-        download_video_bytes(job["video_url"], tmp_path)
+        download_video_bytes(short_info.get("url", ""), tmp_path)
 
-        # 2. Generate AI caption + title
-        caption = generate_caption_variation(job["title"] or "", job["description"] or "")
-        new_title = generate_title_variation(job["title"] or "Short Video")
+        caption = generate_caption_variation(short_info.get("title", ""), short_info.get("description", ""))
+        new_title = generate_title_variation(short_info.get("title", "") or "Short Video")
 
-        # 3. Upload to YouTube
+        oauth_creds = tc_info.get("oauth_credentials")
+        if isinstance(oauth_creds, str):
+            oauth_creds = json.loads(oauth_creds)
+
         result = upload_short(
             video_path=tmp_path,
             title=new_title,
             description=caption,
-            oauth_credentials_json=job["oauth_credentials"],
+            oauth_credentials_json=json.dumps(oauth_creds) if isinstance(oauth_creds, dict) else oauth_creds,
         )
 
         yt_video_id = result["youtube_video_id"]
+        supabase.table("upload_jobs").update({
+            "status": "done",
+            "youtube_video_id": yt_video_id,
+            "caption_variation": caption,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", job_id).execute()
 
-        # 4. Persist results
-        with db() as conn:
-            conn.execute(
-                """UPDATE upload_jobs
-                   SET status='done', youtube_video_id=?, caption_variation=?,
-                       uploaded_at=datetime('now')
-                   WHERE id=?""",
-                (yt_video_id, caption, job_id),
-            )
-            conn.execute(
-                "UPDATE target_channels SET upload_count=upload_count+1, last_upload_at=datetime('now') WHERE id=?",
-                (job["tc_id"],),
-            )
-            conn.execute(
-                "UPDATE shorts SET status='done' WHERE video_id=?",
-                (job["video_id"],),
-            )
-            # Update creds if token refreshed
-            conn.execute(
-                "UPDATE target_channels SET oauth_credentials=? WHERE id=?",
-                (json.dumps(result["updated_credentials"]), job["tc_id"]),
-            )
+        tc_id = tc_info.get("id") or job.get("target_channel_id")
+        # Increment upload count
+        tc_row = supabase.table("target_channels").select("upload_count").eq("id", tc_id).execute().data
+        new_count = (tc_row[0]["upload_count"] or 0) + 1 if tc_row else 1
+        supabase.table("target_channels").update({
+            "upload_count": new_count,
+            "last_upload_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", tc_id).execute()
+        supabase.table("shorts").update({"status": "done"}).eq("video_id", job["video_id"]).eq("user_id", user_id).execute()
+
+        if result.get("updated_credentials"):
+            supabase.table("target_channels").update({"oauth_credentials": result["updated_credentials"]}).eq("id", tc_id).execute()
 
         print(f"[upload] Job {job_id} done — yt:{yt_video_id}")
 
     except Exception as e:
         print(f"[upload] Job {job_id} failed: {e}")
-        with db() as conn:
-            conn.execute(
-                "UPDATE upload_jobs SET status='failed', error_message=? WHERE id=?",
-                (str(e), job_id),
-            )
+        supabase.table("upload_jobs").update({"status": "failed", "error_message": str(e)}).eq("id", job_id).execute()
     finally:
         try:
             os.unlink(tmp_path)
@@ -838,26 +753,18 @@ def _run_upload(job_id: int):
 # ── Webhook Test Upload ───────────────────────────────────────────────────────
 
 _webhook_state: dict = {"running": False, "last_result": None}
+_multiply_state: dict = {"running": False, "last_result": None, "progress": {}}
 
 
 @app.post("/upload/webhook-test")
-def webhook_test_upload(body: WebhookTestRequest, background_tasks: BackgroundTasks):
-    """
-    Test upload pipeline: downloads video, generates AI titles/caption,
-    then sends FULL payload (including video file as base64) to the n8n webhook
-    for each of the N simulated channels. No YouTube API needed.
-    """
+def webhook_test_upload(body: WebhookTestRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user_id)):
     if _webhook_state["running"]:
         return {"status": "already_running"}
     if not body.video_ids:
         raise HTTPException(400, "No video_ids provided")
-
     _webhook_state["running"] = True
     _webhook_state["last_result"] = None
-    background_tasks.add_task(
-        _run_webhook_test, body.video_ids, body.n_channels,
-        body.process_video, body.use_peak_hours
-    )
+    background_tasks.add_task(_run_webhook_test, body.video_ids, body.n_channels, body.process_video, body.use_peak_hours, user_id)
     return {
         "status": "webhook_test_started",
         "videos": len(body.video_ids),
@@ -870,138 +777,89 @@ def webhook_test_upload(body: WebhookTestRequest, background_tasks: BackgroundTa
 
 @app.get("/upload/webhook-test/status")
 def webhook_test_status():
-    return {
-        "running": _webhook_state["running"],
-        "last_result": _webhook_state["last_result"],
-    }
+    return {"running": _webhook_state["running"], "last_result": _webhook_state["last_result"]}
 
 
-def _next_peak_slot(base_time: datetime, slot_index: int, gap_hours: float,
-                     use_peak: bool) -> datetime:
-    """
-    Calculate the next upload time. If use_peak=True, snaps to IST peak hours.
-    Peak hours: 12-2 PM IST, 6-10 PM IST.
-    """
+def _next_peak_slot(base_time, slot_index, gap_hours, use_peak):
     candidate = base_time + timedelta(hours=gap_hours * slot_index)
     if not use_peak:
         return candidate
-
     ist_time = candidate + IST_OFFSET
     hour = ist_time.hour
-
     if hour in PEAK_HOURS_IST:
-        return candidate  # already in peak
-
-    # Find next peak hour
+        return candidate
     for offset_h in range(1, 25):
         test = ist_time + timedelta(hours=offset_h)
         if test.hour in PEAK_HOURS_IST:
             return candidate + timedelta(hours=offset_h)
-
     return candidate
 
 
-def _run_webhook_test(video_ids: list[str], n_channels: int,
-                      do_process: bool = True, use_peak: bool = True,
-                      video_available_channels: dict = None):
+def _run_webhook_test(video_ids, n_channels, do_process=True, use_peak=True, user_id=None, video_available_channels=None):
     results = []
     errors = []
     cleanup_files = []
 
-    # Load actual target channel names (use them if available)
     target_channel_names = []
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT channel_name FROM target_channels ORDER BY id ASC"
-        ).fetchall()
+    if user_id:
+        rows = supabase.table("target_channels").select("channel_name").eq("user_id", user_id).order("id").execute().data
         target_channel_names = [r["channel_name"] for r in rows]
 
     for vid_id in video_ids:
-        # 1. Get short info from DB
-        with db() as conn:
-            short = conn.execute(
-                "SELECT * FROM shorts WHERE video_id=?", (vid_id,)
-            ).fetchone()
-            if not short:
-                errors.append(f"{vid_id}: not found in DB")
-                continue
-            short = dict(short)
+        short_data = supabase.table("shorts").select("*").eq("video_id", vid_id).eq("user_id", user_id).execute().data
+        if not short_data:
+            errors.append(f"{vid_id}: not found in DB")
+            continue
+        short = short_data[0]
 
-            # Get AI titles
-            ai_titles = conn.execute(
-                "SELECT title FROM ai_titles WHERE video_id=?", (vid_id,)
-            ).fetchall()
-            ai_title_list = [t["title"] for t in ai_titles]
+        ai_titles_data = supabase.table("ai_titles").select("title").eq("video_id", vid_id).eq("user_id", user_id).execute().data
+        ai_title_list = [t["title"] for t in ai_titles_data]
 
-        # 2. Generate AI titles if none exist
         if not ai_title_list:
             try:
-                for _ in range(5):
-                    t = generate_title_variation(short["title"] or "Short Video")
-                    ai_title_list.append(t)
-                with db() as conn:
-                    for t in ai_title_list:
-                        conn.execute(
-                            "INSERT INTO ai_titles (video_id, title) VALUES (?,?)",
-                            (vid_id, t),
-                        )
-                print(f"[webhook] Generated 5 AI titles for {vid_id}")
+                ai_title_list = [generate_title_variation(short["title"] or "Short Video") for _ in range(5)]
+                for t in ai_title_list:
+                    supabase.table("ai_titles").insert({"user_id": user_id, "video_id": vid_id, "title": t}).execute()
             except Exception as e:
                 print(f"[webhook] AI title generation failed for {vid_id}: {e}")
                 ai_title_list = [short["title"]]
 
-        # 3. Generate AI caption
         try:
-            caption = generate_caption_variation(
-                short["title"] or "", short["description"] or ""
-            )
+            caption = generate_caption_variation(short["title"] or "", short["description"] or "")
         except Exception:
-            caption = short["description"] or short["title"] or ""
+            caption = short.get("description") or short.get("title") or ""
 
-        # 4. Download video binary
         tmp_path = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
                 tmp_path = tmp.name
             cleanup_files.append(tmp_path)
             video_url = short["url"] or f"https://www.youtube.com/shorts/{vid_id}"
-            print(f"[webhook] Downloading {vid_id} from {video_url}...")
             download_video_bytes(video_url, tmp_path)
-            print(f"[webhook] Downloaded {vid_id}: {os.path.getsize(tmp_path) / 1024:.0f} KB")
         except Exception as e:
             errors.append(f"{vid_id}: download failed - {e}")
-            print(f"[webhook] Download failed for {vid_id}: {e}")
             continue
 
-        # 5. Send to webhook for each channel — randomized order, titles & timing
         now = datetime.now(timezone.utc)
-
-        # Use only available channels (skip already-uploaded ones)
         if video_available_channels and vid_id in video_available_channels:
             channel_numbers = list(video_available_channels[vid_id])
         else:
             channel_numbers = list(range(1, n_channels + 1))
         random.shuffle(channel_numbers)
 
-        # Randomize title assignment — shuffle a copy of the title list
         shuffled_titles = list(ai_title_list)
         random.shuffle(shuffled_titles)
 
         for slot_idx, ch_num in enumerate(channel_numbers):
-            # Use real target channel name if available, else fallback
             if ch_num <= len(target_channel_names):
                 channel_name = target_channel_names[ch_num - 1]
             else:
                 channel_name = f"Channel {ch_num}"
 
-            # Pick title from shuffled list (each channel gets a different one)
             picked_title = shuffled_titles[slot_idx % len(shuffled_titles)]
-
-            # Add random jitter ±30min to scheduled time for organic feel
             jitter_minutes = random.randint(-30, 30)
             scheduled_at = _next_peak_slot(now, slot_idx, 2, use_peak) + timedelta(minutes=jitter_minutes)
 
-            # Process video with ffmpeg for uniqueness per channel
             send_path = tmp_path
             if do_process:
                 try:
@@ -1009,13 +867,10 @@ def _run_webhook_test(video_ids: list[str], n_channels: int,
                     if processed_path != tmp_path:
                         cleanup_files.append(processed_path)
                         send_path = processed_path
-                except Exception as e:
-                    print(f"[webhook] Video processing skipped for ch{ch_num}: {e}")
+                except Exception:
+                    pass
 
             video_size = os.path.getsize(send_path)
-
-            # Send as multipart form with actual MP4 file + JSON metadata file
-            # n8n receives: "video_file" (binary MP4) + "metadata" (JSON file)
             channel_label = f"YT{ch_num}"
             try:
                 metadata = {
@@ -1029,13 +884,13 @@ def _run_webhook_test(video_ids: list[str], n_channels: int,
                     "new_title": picked_title,
                     "all_ai_titles": ai_title_list,
                     "caption": caption,
-                    "description": short["description"] or "",
-                    "original_url": short["url"] or "",
-                    "thumbnail": short["thumbnail"] or "",
-                    "views": short["views_last_check"] or 0,
-                    "views_delta": short["views_delta"] or 0,
-                    "likes": short["likes"] or 0,
-                    "duration": short["duration"] or 0,
+                    "description": short.get("description") or "",
+                    "original_url": short.get("url") or "",
+                    "thumbnail": short.get("thumbnail") or "",
+                    "views": short.get("views_last_check") or 0,
+                    "views_delta": short.get("views_delta") or 0,
+                    "likes": short.get("likes") or 0,
+                    "duration": short.get("duration") or 0,
                     "published_at": short.get("published_at") or "",
                     "velocity_score": short.get("velocity_score") or 0,
                     "trend": short.get("trend") or "flat",
@@ -1051,13 +906,9 @@ def _run_webhook_test(video_ids: list[str], n_channels: int,
                         ("video_file", (f"{vid_id}_{channel_label}.mp4", vf, "video/mp4")),
                         ("metadata", ("metadata.json", metadata_bytes, "application/json")),
                     ]
-
-                    resp = httpx.post(
-                        WEBHOOK_URL,
-                        files=files,
-                        timeout=60,
-                    )
+                    resp = httpx.post(WEBHOOK_URL, files=files, timeout=60)
                 resp.raise_for_status()
+
                 results.append({
                     "video_id": vid_id,
                     "channel_label": channel_label,
@@ -1068,283 +919,116 @@ def _run_webhook_test(video_ids: list[str], n_channels: int,
                     "processed": do_process,
                     "scheduled_at": scheduled_at.isoformat(),
                 })
-                # Log to DB
-                with db() as conn:
-                    conn.execute(
-                        """INSERT INTO webhook_logs
-                           (video_id, original_title, new_title, caption, channel_number,
-                            channel_name, total_channels, file_size_bytes, video_processed,
-                            scheduled_at, webhook_status, webhook_url, velocity_score,
-                            trend, thumbnail, status)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (
-                            vid_id, short["title"], picked_title, caption, ch_num,
-                            channel_name, n_channels, video_size, 1 if do_process else 0,
-                            scheduled_at.isoformat(), resp.status_code, WEBHOOK_URL,
-                            short.get("velocity_score") or 0, short.get("trend") or "flat",
-                            short.get("thumbnail") or "", "sent",
-                        ),
-                    )
+                supabase.table("webhook_logs").insert({
+                    "user_id": user_id,
+                    "video_id": vid_id,
+                    "original_title": short["title"],
+                    "new_title": picked_title,
+                    "caption": caption,
+                    "channel_number": ch_num,
+                    "channel_name": channel_name,
+                    "total_channels": n_channels,
+                    "file_size_bytes": video_size,
+                    "video_processed": 1 if do_process else 0,
+                    "scheduled_at": scheduled_at.isoformat(),
+                    "webhook_status": resp.status_code,
+                    "webhook_url": WEBHOOK_URL,
+                    "velocity_score": short.get("velocity_score") or 0,
+                    "trend": short.get("trend") or "flat",
+                    "thumbnail": short.get("thumbnail") or "",
+                    "status": "sent",
+                }).execute()
                 _multiply_state["progress"]["completed"] = _multiply_state["progress"].get("completed", 0) + 1
-                print(f"[webhook] Sent {vid_id} -> {channel_label} ({channel_name}) (HTTP {resp.status_code}, {video_size/1024:.0f}KB)")
+
             except Exception as e:
-                err = f"{vid_id} -> {channel_label} ({channel_name}): webhook failed - {e}"
+                err = f"{vid_id} -> {channel_label}: webhook failed - {e}"
                 errors.append(err)
                 _multiply_state["progress"]["completed"] = _multiply_state["progress"].get("completed", 0) + 1
                 _multiply_state["progress"]["errors"] = _multiply_state["progress"].get("errors", 0) + 1
-                # Log failure to DB
                 try:
-                    with db() as conn:
-                        conn.execute(
-                            """INSERT INTO webhook_logs
-                               (video_id, original_title, new_title, caption, channel_number,
-                                channel_name, total_channels, file_size_bytes, video_processed,
-                                scheduled_at, webhook_url, velocity_score, trend, thumbnail,
-                                error_message, status)
-                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                            (
-                                vid_id, short["title"], picked_title, caption, ch_num,
-                                channel_name, n_channels, video_size, 1 if do_process else 0,
-                                scheduled_at.isoformat(), WEBHOOK_URL,
-                                short.get("velocity_score") or 0, short.get("trend") or "flat",
-                                short.get("thumbnail") or "", str(e), "failed",
-                            ),
-                        )
+                    supabase.table("webhook_logs").insert({
+                        "user_id": user_id,
+                        "video_id": vid_id,
+                        "original_title": short["title"],
+                        "new_title": picked_title,
+                        "caption": caption,
+                        "channel_number": ch_num,
+                        "channel_name": channel_name,
+                        "total_channels": n_channels,
+                        "file_size_bytes": video_size,
+                        "video_processed": 1 if do_process else 0,
+                        "scheduled_at": scheduled_at.isoformat(),
+                        "webhook_url": WEBHOOK_URL,
+                        "velocity_score": short.get("velocity_score") or 0,
+                        "trend": short.get("trend") or "flat",
+                        "thumbnail": short.get("thumbnail") or "",
+                        "error_message": str(e),
+                        "status": "failed",
+                    }).execute()
                 except Exception:
                     pass
-                print(f"[webhook] {err}")
 
-    # Cleanup all temp files
     for f in cleanup_files:
         try:
             os.unlink(f)
         except Exception:
             pass
 
-    final_result = {
-        "total_sent": len(results),
-        "total_errors": len(errors),
-        "results": results,
-        "errors": errors,
-    }
+    final_result = {"total_sent": len(results), "total_errors": len(errors), "results": results, "errors": errors}
     _webhook_state["last_result"] = final_result
     _webhook_state["running"] = False
     _multiply_state["last_result"] = final_result
     _multiply_state["running"] = False
-    print(f"[webhook] Done: {len(results)} sent, {len(errors)} errors")
 
 
-# ── Multiply Direct Upload (production flow) ─────────────────────────────────
+# ── Multiply via n8n Webhook ──────────────────────────────────────────────────
 
-_multiply_state: dict = {"running": False, "last_result": None, "progress": {}}
-
-@app.post("/upload/multiply-direct")
-def multiply_direct(body: MultiplyDirectRequest, background_tasks: BackgroundTasks):
-    """
-    Direct multiply flow: downloads video, processes with ffmpeg,
-    generates unique AI title per channel, uploads directly to YouTube
-    using each target channel's stored OAuth credentials.
-    """
+@app.post("/upload/multiply-via-webhook")
+def multiply_via_webhook(body: MultiplyViaWebhookRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user_id)):
     if _multiply_state["running"]:
         return {"status": "already_running"}
     if not body.video_ids:
         raise HTTPException(400, "No video_ids provided")
 
-    with db() as conn:
-        targets = conn.execute(
-            """SELECT id, channel_name, oauth_credentials, upload_count, last_upload_at
-               FROM target_channels ORDER BY
-               CASE WHEN last_upload_at IS NULL THEN 0 ELSE 1 END,
-               last_upload_at ASC, upload_count ASC"""
-        ).fetchall()
+    target_count = len(supabase.table("target_channels").select("id").eq("user_id", user_id).execute().data)
+    max_used_data = supabase.table("webhook_logs").select("channel_number").eq("user_id", user_id).order("channel_number", desc=True).limit(1).execute().data
+    max_used = max_used_data[0]["channel_number"] if max_used_data else 0
+    max_channels = max(target_count, body.n_channels, max_used)
 
-    if not targets:
-        raise HTTPException(400, "No target channels connected. Add channels in Target Channels tab.")
+    last_upload_data = supabase.table("webhook_logs").select("channel_number, created_at").eq("user_id", user_id).eq("status", "sent").execute().data
+    last_upload_map = {}
+    for r in last_upload_data:
+        ch = r["channel_number"]
+        if ch not in last_upload_map or r["created_at"] > last_upload_map[ch]:
+            last_upload_map[ch] = r["created_at"]
 
-    n = min(body.n_channels, len(targets))
-    selected_targets = [dict(t) for t in targets[:n]]
+    all_channel_nums = list(range(1, max_channels + 1))
+    valid_video_ids = []
+    video_available_channels = {}
+
+    for vid_id in body.video_ids:
+        sorted_channels = sorted(all_channel_nums, key=lambda ch: last_upload_map.get(ch) or "0000-00-00")
+        available = sorted_channels[:body.n_channels]
+        valid_video_ids.append(vid_id)
+        video_available_channels[vid_id] = available
 
     _multiply_state["running"] = True
     _multiply_state["last_result"] = None
+    total_new_uploads = sum(len(video_available_channels[v]) for v in valid_video_ids)
     _multiply_state["progress"] = {
-        "total_videos": len(body.video_ids),
-        "total_channels": n,
-        "total_jobs": len(body.video_ids) * n,
+        "total_videos": len(valid_video_ids),
+        "total_channels": body.n_channels,
+        "total_jobs": total_new_uploads,
         "completed": 0,
         "errors": 0,
     }
-
-    background_tasks.add_task(
-        _run_direct_multiply, body.video_ids, selected_targets, body.process_video
-    )
+    background_tasks.add_task(_run_webhook_test, valid_video_ids, body.n_channels, body.process_video, body.use_peak_hours, user_id, video_available_channels)
     return {
         "status": "multiply_started",
-        "videos": len(body.video_ids),
-        "channels_per_video": n,
-        "total_uploads": len(body.video_ids) * n,
-        "ffmpeg_processing": body.process_video,
-        "channels": [t["channel_name"] for t in selected_targets],
+        "videos": len(valid_video_ids),
+        "channels_per_video": body.n_channels,
+        "total_webhooks": total_new_uploads,
     }
-
-
-# Keep backward compat — old endpoint redirects to new
-@app.post("/upload/multiply-via-webhook")
-def multiply_via_webhook_compat(body: MultiplyDirectRequest, background_tasks: BackgroundTasks):
-    return multiply_direct(body, background_tasks)
-
-
-def _run_direct_multiply(video_ids: list[str], targets: list[dict], do_process: bool):
-    """Download each video, generate AI titles, upload directly to each target channel."""
-    results = []
-    errors = []
-    cleanup_files = []
-
-    for vid_id in video_ids:
-        with db() as conn:
-            short = conn.execute("SELECT * FROM shorts WHERE video_id=?", (vid_id,)).fetchone()
-            if not short:
-                errors.append(f"{vid_id}: not found in DB")
-                _multiply_state["progress"]["completed"] = _multiply_state["progress"].get("completed", 0) + len(targets)
-                continue
-            short = dict(short)
-
-        # Generate AI titles
-        ai_titles = []
-        try:
-            for _ in range(len(targets)):
-                t = generate_title_variation(short["title"] or "Short Video")
-                ai_titles.append(t)
-        except Exception:
-            ai_titles = [short["title"] or "Short Video"] * len(targets)
-
-        # Generate AI caption
-        try:
-            caption = generate_caption_variation(short["title"] or "", short["description"] or "")
-        except Exception:
-            caption = short["description"] or short["title"] or ""
-
-        # Download video
-        tmp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-                tmp_path = tmp.name
-            cleanup_files.append(tmp_path)
-            video_url = short["url"] or f"https://www.youtube.com/shorts/{vid_id}"
-            print(f"[multiply] Downloading {vid_id}...")
-            download_video_bytes(video_url, tmp_path)
-            print(f"[multiply] Downloaded {vid_id}: {os.path.getsize(tmp_path) / 1024:.0f} KB")
-        except Exception as e:
-            errors.append(f"{vid_id}: download failed - {e}")
-            _multiply_state["progress"]["completed"] = _multiply_state["progress"].get("completed", 0) + len(targets)
-            continue
-
-        # Upload to each target channel
-        for i, target in enumerate(targets):
-            picked_title = ai_titles[i % len(ai_titles)]
-            channel_name = target["channel_name"]
-            tc_id = target["id"]
-
-            # Process video with ffmpeg for uniqueness per channel
-            send_path = tmp_path
-            if do_process:
-                try:
-                    processed_path = process_video(tmp_path, channel_num=i + 1)
-                    if processed_path != tmp_path:
-                        cleanup_files.append(processed_path)
-                        send_path = processed_path
-                except Exception as e:
-                    print(f"[multiply] Video processing skipped for {channel_name}: {e}")
-
-            try:
-                print(f"[multiply] Uploading {vid_id} -> {channel_name}...")
-                result = upload_short(
-                    video_path=send_path,
-                    title=picked_title,
-                    description=caption,
-                    oauth_credentials_json=target["oauth_credentials"],
-                )
-                yt_video_id = result["youtube_video_id"]
-
-                # Update DB
-                with db() as conn:
-                    conn.execute(
-                        "UPDATE target_channels SET upload_count=upload_count+1, last_upload_at=datetime('now'), oauth_credentials=? WHERE id=?",
-                        (json.dumps(result["updated_credentials"]), tc_id),
-                    )
-                    # Log in webhook_logs for stats tracking
-                    conn.execute(
-                        """INSERT INTO webhook_logs
-                           (video_id, original_title, new_title, caption, channel_number,
-                            channel_name, total_channels, file_size_bytes, video_processed,
-                            scheduled_at, webhook_status, webhook_url, velocity_score,
-                            trend, thumbnail, status, uploaded_video_id)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (
-                            vid_id, short["title"], picked_title, caption, i + 1,
-                            channel_name, len(targets), os.path.getsize(send_path),
-                            1 if do_process else 0,
-                            datetime.now(timezone.utc).isoformat(), 200, "direct_upload",
-                            short.get("velocity_score") or 0, short.get("trend") or "flat",
-                            short.get("thumbnail") or "", "sent", yt_video_id,
-                        ),
-                    )
-
-                results.append({
-                    "video_id": vid_id,
-                    "channel": channel_name,
-                    "title_used": picked_title,
-                    "youtube_video_id": yt_video_id,
-                })
-                print(f"[multiply] Uploaded {vid_id} -> {channel_name} (yt:{yt_video_id})")
-
-            except Exception as e:
-                err = f"{vid_id} -> {channel_name}: upload failed - {e}"
-                errors.append(err)
-                _multiply_state["progress"]["errors"] = _multiply_state["progress"].get("errors", 0) + 1
-                # Log failure
-                try:
-                    with db() as conn:
-                        conn.execute(
-                            """INSERT INTO webhook_logs
-                               (video_id, original_title, new_title, caption, channel_number,
-                                channel_name, total_channels, file_size_bytes, video_processed,
-                                scheduled_at, webhook_url, velocity_score, trend, thumbnail,
-                                error_message, status)
-                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                            (
-                                vid_id, short["title"], picked_title, caption, i + 1,
-                                channel_name, len(targets), 0, 1 if do_process else 0,
-                                datetime.now(timezone.utc).isoformat(), "direct_upload",
-                                short.get("velocity_score") or 0, short.get("trend") or "flat",
-                                short.get("thumbnail") or "", str(e), "failed",
-                            ),
-                        )
-                except Exception:
-                    pass
-                print(f"[multiply] {err}")
-
-            _multiply_state["progress"]["completed"] = _multiply_state["progress"].get("completed", 0) + 1
-
-        # Mark short as done
-        with db() as conn:
-            conn.execute("UPDATE shorts SET status='done' WHERE video_id=?", (vid_id,))
-
-    # Cleanup temp files
-    for f in cleanup_files:
-        try:
-            os.unlink(f)
-        except Exception:
-            pass
-
-    final_result = {
-        "total_uploaded": len(results),
-        "total_errors": len(errors),
-        "results": results,
-        "errors": errors,
-    }
-    _multiply_state["last_result"] = final_result
-    _multiply_state["running"] = False
-    print(f"[multiply] Done: {len(results)} uploaded, {len(errors)} errors")
 
 
 @app.get("/upload/multiply-via-webhook/status")
@@ -1352,133 +1036,92 @@ def multiply_status():
     return {
         "running": _multiply_state["running"],
         "progress": _multiply_state["progress"],
-        "last_result": _multiply_state.get("last_result"),
+        "last_result": _multiply_state.get("last_result") or _webhook_state.get("last_result"),
     }
 
-@app.get("/upload/multiply-direct/status")
-def multiply_direct_status():
-    return multiply_status()
 
-
-# ── Multiplied Videos View ────────────────────────────────────────────────────
+# ── N8n Callback ──────────────────────────────────────────────────────────────
 
 class N8nCallbackRequest(BaseModel):
-    webhook_log_id: Optional[int] = None   # webhook_logs.id to update
-    video_id: Optional[str] = None         # original source video_id
-    channel_number: Optional[int] = None   # which channel this was uploaded to
-    uploaded_video_id: str                 # the YouTube video ID of the uploaded copy
+    webhook_log_id: Optional[int] = None
+    video_id: Optional[str] = None
+    channel_number: Optional[int] = None
+    uploaded_video_id: str
 
 
 @app.post("/upload/n8n-callback")
 def n8n_upload_callback(body: N8nCallbackRequest):
-    """
-    n8n calls this endpoint after successfully uploading a video to YouTube.
-    Stores the uploaded YouTube video ID so we can fetch real stats later.
-    """
-    with db() as conn:
-        if body.webhook_log_id:
-            conn.execute(
-                "UPDATE webhook_logs SET uploaded_video_id=? WHERE id=?",
-                (body.uploaded_video_id, body.webhook_log_id),
-            )
-        elif body.video_id and body.channel_number is not None:
-            conn.execute(
-                """UPDATE webhook_logs SET uploaded_video_id=?
-                   WHERE video_id=? AND channel_number=? AND status='sent'
-                   ORDER BY created_at DESC LIMIT 1""",
-                (body.uploaded_video_id, body.video_id, body.channel_number),
-            )
-    print(f"[n8n-callback] Stored uploaded_video_id={body.uploaded_video_id}")
+    if body.webhook_log_id:
+        supabase.table("webhook_logs").update({"uploaded_video_id": body.uploaded_video_id}).eq("id", body.webhook_log_id).execute()
+    elif body.video_id and body.channel_number is not None:
+        logs = supabase.table("webhook_logs").select("id").eq("video_id", body.video_id).eq("channel_number", body.channel_number).eq("status", "sent").order("created_at", desc=True).limit(1).execute().data
+        if logs:
+            supabase.table("webhook_logs").update({"uploaded_video_id": body.uploaded_video_id}).eq("id", logs[0]["id"]).execute()
     return {"status": "ok"}
 
 
-def _refresh_uploaded_video_stats():
-    """
-    Fetches real views/likes for all uploaded copies that have an uploaded_video_id.
-    Called every 3 hours by the scheduler.
-    """
-    with db() as conn:
-        rows = conn.execute(
-            """SELECT id, uploaded_video_id FROM webhook_logs
-               WHERE uploaded_video_id IS NOT NULL AND uploaded_video_id != ''
-               AND status = 'sent'"""
-        ).fetchall()
+# ── Stats Refresh ─────────────────────────────────────────────────────────────
 
-    print(f"[stats-refresh] Refreshing stats for {len(rows)} uploaded videos...")
-    updated = 0
+def _refresh_uploaded_video_stats():
+    rows = supabase.table("webhook_logs").select("id, uploaded_video_id").not_.is_("uploaded_video_id", "null").eq("status", "sent").execute().data
     for row in rows:
+        if not row["uploaded_video_id"]:
+            continue
         try:
             stats = get_video_stats(f"https://www.youtube.com/watch?v={row['uploaded_video_id']}")
-            views = stats.get("views", 0) or 0
-            likes = stats.get("likes", 0) or 0
-            with db() as conn:
-                conn.execute(
-                    """UPDATE webhook_logs
-                       SET uploaded_views=?, uploaded_likes=?, stats_updated_at=?
-                       WHERE id=?""",
-                    (views, likes, datetime.now(timezone.utc).isoformat(), row["id"]),
-                )
-            updated += 1
+            supabase.table("webhook_logs").update({
+                "uploaded_views": stats.get("views", 0) or 0,
+                "uploaded_likes": stats.get("likes", 0) or 0,
+                "stats_updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", row["id"]).execute()
         except Exception as e:
             print(f"[stats-refresh] Failed for {row['uploaded_video_id']}: {e}")
-
-    print(f"[stats-refresh] Done — updated {updated}/{len(rows)} videos")
 
 
 @app.post("/upload/refresh-stats")
 def manual_refresh_stats(background_tasks: BackgroundTasks):
-    """Manually trigger a stats refresh for all uploaded videos."""
     background_tasks.add_task(_refresh_uploaded_video_stats)
     return {"status": "refresh_started"}
 
 
+# ── Multiplied Videos ─────────────────────────────────────────────────────────
+
 @app.get("/upload/multiplied-videos")
-def get_multiplied_videos():
-    """
-    Returns all multiplied videos grouped by video_id with real uploaded stats.
-    """
-    with db() as conn:
-        rows = conn.execute(
-            """SELECT wl.id, wl.video_id, wl.original_title, wl.channel_number, wl.channel_name,
-                      wl.new_title, wl.status, wl.scheduled_at, wl.created_at,
-                      wl.uploaded_video_id, wl.uploaded_views, wl.uploaded_likes,
-                      wl.stats_updated_at,
-                      s.thumbnail, s.url as original_url, s.views_last_check, s.likes,
-                      s.velocity_score, s.trend
-               FROM webhook_logs wl
-               LEFT JOIN shorts s ON s.video_id = wl.video_id
-               WHERE wl.status = 'sent'
-               ORDER BY wl.created_at DESC"""
-        ).fetchall()
+def get_multiplied_videos(user_id: str = Depends(get_user_id)):
+    rows = supabase.table("webhook_logs").select("id, video_id, original_title, channel_number, channel_name, new_title, status, scheduled_at, created_at, uploaded_video_id, uploaded_views, uploaded_likes, stats_updated_at").eq("user_id", user_id).eq("status", "sent").order("created_at", desc=True).execute().data
+
+    # Get shorts data for thumbnails etc
+    video_ids = list(set(r["video_id"] for r in rows))
+    shorts_map = {}
+    if video_ids:
+        shorts_data = supabase.table("shorts").select("video_id, thumbnail, url, views_last_check, likes, velocity_score, trend").eq("user_id", user_id).in_("video_id", video_ids).execute().data
+        shorts_map = {s["video_id"]: s for s in shorts_data}
 
     grouped = {}
     for r in rows:
         vid = r["video_id"]
+        s = shorts_map.get(vid, {})
         if vid not in grouped:
             grouped[vid] = {
                 "video_id": vid,
                 "title": r["original_title"],
-                "thumbnail": r["thumbnail"] or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
-                "original_url": r["original_url"] or f"https://www.youtube.com/shorts/{vid}",
-                "original_views": r["views_last_check"] or 0,
-                "original_likes": r["likes"] or 0,
-                "velocity_score": r["velocity_score"] or 0,
-                "trend": r["trend"] or "flat",
+                "thumbnail": s.get("thumbnail") or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+                "original_url": s.get("url") or f"https://www.youtube.com/shorts/{vid}",
+                "original_views": s.get("views_last_check") or 0,
+                "original_likes": s.get("likes") or 0,
+                "velocity_score": s.get("velocity_score") or 0,
+                "trend": s.get("trend") or "flat",
                 "channels": [],
                 "total_uploaded_views": 0,
                 "total_uploaded_likes": 0,
                 "stats_updated_at": None,
             }
-        uploaded_views = r["uploaded_views"] or 0
-        uploaded_likes = r["uploaded_likes"] or 0
-        grouped[vid]["total_uploaded_views"] += uploaded_views
-        grouped[vid]["total_uploaded_likes"] += uploaded_likes
-        if r["stats_updated_at"] and (
-            not grouped[vid]["stats_updated_at"]
-            or r["stats_updated_at"] > grouped[vid]["stats_updated_at"]
-        ):
+        uv = r["uploaded_views"] or 0
+        ul = r["uploaded_likes"] or 0
+        grouped[vid]["total_uploaded_views"] += uv
+        grouped[vid]["total_uploaded_likes"] += ul
+        if r["stats_updated_at"] and (not grouped[vid]["stats_updated_at"] or r["stats_updated_at"] > grouped[vid]["stats_updated_at"]):
             grouped[vid]["stats_updated_at"] = r["stats_updated_at"]
-
         grouped[vid]["channels"].append({
             "channel_number": r["channel_number"],
             "channel_name": r["channel_name"],
@@ -1486,8 +1129,8 @@ def get_multiplied_videos():
             "scheduled_at": r["scheduled_at"],
             "sent_at": r["created_at"],
             "uploaded_video_id": r["uploaded_video_id"],
-            "uploaded_views": uploaded_views,
-            "uploaded_likes": uploaded_likes,
+            "uploaded_views": uv,
+            "uploaded_likes": ul,
             "stats_updated_at": r["stats_updated_at"],
         })
 
@@ -1497,37 +1140,27 @@ def get_multiplied_videos():
     return result
 
 
-# ── Webhook Upload Logs ───────────────────────────────────────────────────────
+# ── Webhook Logs ──────────────────────────────────────────────────────────────
 
 @app.get("/upload/webhook-logs")
-def list_webhook_logs(limit: int = 200):
-    """Return the most recent webhook upload logs."""
-    with db() as conn:
-        rows = conn.execute(
-            """SELECT wl.*, s.thumbnail as short_thumbnail
-               FROM webhook_logs wl
-               LEFT JOIN shorts s ON s.video_id = wl.video_id
-               ORDER BY wl.created_at DESC
-               LIMIT ?""",
-            (limit,),
-        ).fetchall()
-    return [dict(r) for r in rows]
+def list_webhook_logs(limit: int = 200, user_id: str = Depends(get_user_id)):
+    result = supabase.table("webhook_logs").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute()
+    return result.data
 
 
 @app.get("/upload/webhook-logs/summary")
-def webhook_logs_summary():
-    """Aggregated summary of all webhook uploads."""
-    with db() as conn:
-        total = conn.execute("SELECT COUNT(*) as cnt FROM webhook_logs").fetchone()["cnt"]
-        sent = conn.execute("SELECT COUNT(*) as cnt FROM webhook_logs WHERE status='sent'").fetchone()["cnt"]
-        failed = conn.execute("SELECT COUNT(*) as cnt FROM webhook_logs WHERE status='failed'").fetchone()["cnt"]
-        unique_videos = conn.execute("SELECT COUNT(DISTINCT video_id) as cnt FROM webhook_logs WHERE status='sent'").fetchone()["cnt"]
-        unique_channels = conn.execute("SELECT COUNT(DISTINCT channel_name) as cnt FROM webhook_logs WHERE status='sent'").fetchone()["cnt"]
-        total_size = conn.execute("SELECT COALESCE(SUM(file_size_bytes), 0) as total FROM webhook_logs WHERE status='sent'").fetchone()["total"]
+def webhook_logs_summary(user_id: str = Depends(get_user_id)):
+    all_logs = supabase.table("webhook_logs").select("status, video_id, channel_name, file_size_bytes").eq("user_id", user_id).execute().data
+    total = len(all_logs)
+    sent = [l for l in all_logs if l["status"] == "sent"]
+    failed = [l for l in all_logs if l["status"] == "failed"]
+    unique_videos = len(set(l["video_id"] for l in sent))
+    unique_channels = len(set(l["channel_name"] for l in sent if l["channel_name"]))
+    total_size = sum(l.get("file_size_bytes") or 0 for l in sent)
     return {
         "total_uploads": total,
-        "sent": sent,
-        "failed": failed,
+        "sent": len(sent),
+        "failed": len(failed),
         "unique_videos": unique_videos,
         "unique_channels": unique_channels,
         "total_data_sent_mb": round(total_size / (1024 * 1024), 1),
@@ -1537,48 +1170,31 @@ def webhook_logs_summary():
 # ── Reach Stats ────────────────────────────────────────────────────────────────
 
 @app.get("/reach/stats")
-def get_reach_stats():
-    """
-    Returns per-short reach multiplication:
-    original views vs total views across all uploads.
-    """
-    with db() as conn:
-        jobs_done = conn.execute(
-            """SELECT uj.id, uj.video_id, uj.youtube_video_id, uj.target_channel_id,
-                      uj.uploaded_at, tc.channel_name,
-                      s.title, s.views_last_check as original_views, s.thumbnail
-               FROM upload_jobs uj
-               JOIN shorts s ON s.video_id = uj.video_id
-               JOIN target_channels tc ON tc.id = uj.target_channel_id
-               WHERE uj.status='done' AND uj.youtube_video_id IS NOT NULL"""
-        ).fetchall()
+def get_reach_stats(user_id: str = Depends(get_user_id)):
+    jobs_done = supabase.table("upload_jobs").select("id, video_id, youtube_video_id, target_channel_id, uploaded_at, target_channels(channel_name), shorts(title, views_last_check, thumbnail)").eq("user_id", user_id).eq("status", "done").not_.is_("youtube_video_id", "null").execute().data
 
     result = {}
     for row in jobs_done:
         vid = row["video_id"]
+        s = row.get("shorts") or {}
+        tc = row.get("target_channels") or {}
         if vid not in result:
             result[vid] = {
                 "video_id": vid,
-                "title": row["title"],
-                "thumbnail": row["thumbnail"],
-                "original_views": row["original_views"],
+                "title": s.get("title"),
+                "thumbnail": s.get("thumbnail"),
+                "original_views": s.get("views_last_check") or 0,
                 "uploaded_views": 0,
                 "multiplier": 0.0,
                 "uploads": [],
             }
 
-        # Get latest reach_stats entry for this job
-        with db() as conn:
-            stat = conn.execute(
-                "SELECT * FROM reach_stats WHERE upload_job_id=? ORDER BY fetched_at DESC LIMIT 1",
-                (row["id"],),
-            ).fetchone()
-
-        upload_views = stat["views"] if stat else 0
+        stat = supabase.table("reach_stats").select("views").eq("upload_job_id", row["id"]).order("fetched_at", desc=True).limit(1).execute().data
+        upload_views = stat[0]["views"] if stat else 0
         result[vid]["uploaded_views"] += upload_views
         result[vid]["uploads"].append({
             "job_id": row["id"],
-            "channel_name": row["channel_name"],
+            "channel_name": tc.get("channel_name"),
             "youtube_video_id": row["youtube_video_id"],
             "uploaded_at": row["uploaded_at"],
             "views": upload_views,
@@ -1587,39 +1203,33 @@ def get_reach_stats():
     for vid in result:
         orig = result[vid]["original_views"] or 1
         result[vid]["multiplier"] = round(result[vid]["uploaded_views"] / orig, 2)
-
     return list(result.values())
 
 
 @app.post("/reach/refresh")
-def refresh_reach_stats(background_tasks: BackgroundTasks):
-    """Re-fetch YouTube stats for all uploaded videos."""
-    background_tasks.add_task(_refresh_stats)
+def refresh_reach_stats(background_tasks: BackgroundTasks, user_id: str = Depends(get_user_id)):
+    background_tasks.add_task(_refresh_stats, user_id)
     return {"status": "refresh_started"}
 
 
-def _refresh_stats():
-    with db() as conn:
-        jobs = conn.execute(
-            """SELECT uj.id, uj.youtube_video_id, tc.oauth_credentials
-               FROM upload_jobs uj
-               JOIN target_channels tc ON tc.id = uj.target_channel_id
-               WHERE uj.status='done' AND uj.youtube_video_id IS NOT NULL"""
-        ).fetchall()
+def _refresh_stats(user_id: str):
+    jobs = supabase.table("upload_jobs").select("id, youtube_video_id, target_channels(oauth_credentials)").eq("user_id", user_id).eq("status", "done").not_.is_("youtube_video_id", "null").execute().data
 
     for job in jobs:
         try:
-            stats = get_video_stats_from_api(job["youtube_video_id"], job["oauth_credentials"])
-            with db() as conn:
-                conn.execute(
-                    """INSERT INTO reach_stats (upload_job_id, views, likes, comments)
-                       VALUES (?,?,?,?)""",
-                    (job["id"], stats["views"], stats["likes"], stats["comments"]),
-                )
+            tc = job.get("target_channels") or {}
+            oauth_creds = tc.get("oauth_credentials")
+            if isinstance(oauth_creds, str):
+                oauth_creds = json.loads(oauth_creds)
+            stats = get_video_stats_from_api(job["youtube_video_id"], json.dumps(oauth_creds) if isinstance(oauth_creds, dict) else oauth_creds)
+            supabase.table("reach_stats").insert({
+                "upload_job_id": job["id"],
+                "views": stats["views"],
+                "likes": stats["likes"],
+                "comments": stats["comments"],
+            }).execute()
         except Exception as e:
             print(f"[reach] Failed to refresh job {job['id']}: {e}")
-
-    print(f"[reach] Refreshed stats for {len(jobs)} uploads")
 
 
 if __name__ == "__main__":
