@@ -244,17 +244,21 @@ class DeleteChannelBody(BaseModel):
     channel_id: str
 
 
-@app.post("/channels/source/delete", status_code=204)
+@app.post("/channels/source/delete", status_code=200)
 def remove_source_channel_post(body: DeleteChannelBody, user_id: str = Depends(get_user_id)):
-    """Alternative delete via POST body — avoids URL-encoding issues with channel IDs."""
+    """Delete channel via POST body — avoids URL-encoding issues with channel IDs."""
     channel_id = body.channel_id
     print(f"[DELETE-POST] channel_id={channel_id!r}, user_id={user_id!r}")
-    check = supabase.table("source_channels").select("id, user_id").eq("id", channel_id).execute()
-    print(f"[DELETE-POST] found rows: {check.data}")
-    if not check.data:
-        raise HTTPException(404, f"Channel {channel_id} not found")
-    supabase.table("source_channels").delete().eq("id", channel_id).eq("user_id", user_id).execute()
+    # Try delete by id first
+    result = supabase.table("source_channels").delete().eq("id", channel_id).eq("user_id", user_id).execute()
+    print(f"[DELETE-POST] delete by id result: {result.data}")
+    # Also try delete by url in case channel_id is actually a URL stored differently
+    result2 = supabase.table("source_channels").delete().eq("url", channel_id).eq("user_id", user_id).execute()
+    print(f"[DELETE-POST] delete by url result: {result2.data}")
+    deleted = len(result.data or []) + len(result2.data or [])
+    # Clean up shorts for this channel
     supabase.table("shorts").delete().eq("channel_id", channel_id).eq("user_id", user_id).execute()
+    return {"deleted": deleted}
 
 
 # ── YouTube OAuth Connect Flow ─────────────────────────────────────────────────
@@ -1064,6 +1068,18 @@ def multiply_status():
         "progress": _multiply_state["progress"],
         "last_result": _multiply_state.get("last_result") or _webhook_state.get("last_result"),
     }
+
+
+# ── Aliases for frontend (multiply-direct → multiply-via-webhook) ─────────────
+
+@app.post("/upload/multiply-direct")
+def multiply_direct_alias(body: MultiplyViaWebhookRequest, background_tasks: BackgroundTasks, user_id: str = Depends(get_user_id)):
+    return multiply_via_webhook(body, background_tasks, user_id)
+
+
+@app.get("/upload/multiply-direct/status")
+def multiply_direct_status_alias():
+    return multiply_status()
 
 
 # ── N8n Callback ──────────────────────────────────────────────────────────────
