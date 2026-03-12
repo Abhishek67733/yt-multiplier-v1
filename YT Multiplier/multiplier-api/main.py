@@ -217,15 +217,13 @@ def add_source_channel(body: AddSourceChannel, user_id: str = Depends(get_user_i
 
 @app.post("/channels/source/enrich")
 def enrich_source_channels(user_id: str = Depends(get_user_id)):
-    YT_DLP_BASE = os.getenv("YT_DLP_API_BASE_URL", "http://localhost:8000")
     rows = supabase.table("source_channels").select("id, url").eq("user_id", user_id).execute().data
     updated = 0
     for row in rows:
         try:
-            resp = httpx.get(f"{YT_DLP_BASE}/channel/list", params={"url": row["url"], "limit": 1}, timeout=30)
-            data = resp.json()
-            name = data.get("channel") or data.get("channel_name") or data.get("uploader") or ""
-            thumbnail = data.get("thumbnail") or ""
+            info = channel_info(row["url"])
+            name = info.get("name", "")
+            thumbnail = info.get("thumbnail", "")
             if name:
                 supabase.table("source_channels").update({"name": name, "thumbnail": thumbnail}).eq("id", row["id"]).eq("user_id", user_id).execute()
                 updated += 1
@@ -951,9 +949,15 @@ def _run_direct_upload(video_ids, video_target_map, do_process, user_id):
             with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
                 tmp_path = tmp.name
             cleanup_files.append(tmp_path)
-            video_url = short["url"] or f"https://www.youtube.com/shorts/{vid_id}"
+            video_url = short.get("url") or f"https://www.youtube.com/shorts/{vid_id}"
+            print(f"[multiply] Downloading {vid_id} from {video_url}...")
             download_video_bytes(video_url, tmp_path)
+            file_size = os.path.getsize(tmp_path)
+            print(f"[multiply] Downloaded {vid_id}: {file_size/1024:.0f}KB")
+            if file_size < 1000:
+                raise ValueError(f"Downloaded file too small ({file_size} bytes), likely failed")
         except Exception as e:
+            print(f"[multiply] Download failed for {vid_id}: {e}")
             errors.append(f"{vid_id}: download failed - {e}")
             _multiply_state["progress"]["errors"] = _multiply_state["progress"].get("errors", 0) + 1
             continue
@@ -982,8 +986,12 @@ def _run_direct_upload(video_ids, video_target_map, do_process, user_id):
             video_size = os.path.getsize(send_path)
             try:
                 oauth_creds = target.get("oauth_credentials")
+                if not oauth_creds:
+                    raise ValueError(f"No OAuth credentials stored for channel {channel_name}. Re-authenticate the channel.")
                 if isinstance(oauth_creds, str):
                     oauth_creds = json.loads(oauth_creds)
+                if not oauth_creds.get("refresh_token") and not oauth_creds.get("token"):
+                    raise ValueError(f"OAuth credentials for {channel_name} are incomplete (no token). Re-authenticate.")
 
                 print(f"[multiply] Uploading {vid_id} to {channel_name}...")
                 upload_result = upload_short(
