@@ -1,5 +1,5 @@
 /** @type {import('next').NextConfig} */
-// Build: 2026-03-12T11:15
+// Build: 2026-03-12T14:30:v2-force
 const nextConfig = {
   images: {
     remotePatterns: [

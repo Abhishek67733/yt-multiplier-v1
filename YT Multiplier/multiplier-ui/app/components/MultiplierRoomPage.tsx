@@ -1391,7 +1391,7 @@ export default function MultiplierRoomPage() {
             <Flame className="w-5 h-5 text-orange-400" /> Multiplier Room
           </h2>
           <p className="text-[11px] text-[#555] mt-0.5">
-            Smart viral detection &middot; Velocity scoring &middot; Niche-aware AI titles
+            Smart viral detection &middot; Velocity scoring &middot; Direct YouTube upload
           </p>
         </div>
         <div className="flex items-center gap-2">
