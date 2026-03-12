@@ -36,7 +36,9 @@ WEBHOOK_URL = os.getenv(
 PEAK_HOURS_IST = [12, 13, 18, 19, 20, 21]
 IST_OFFSET = timedelta(hours=5, minutes=30)
 
+print("[boot] Creating FastAPI app...")
 app = FastAPI(title="YouTube Shorts Multiplier API", version="2.0.0")
+print("[boot] App created successfully")
 
 app.add_middleware(
     CORSMiddleware,
@@ -98,9 +100,15 @@ def get_optional_user_id(x_user_id: str = Header(None)) -> Optional[str]:
 
 @app.on_event("startup")
 def startup():
-    _ensure_default_user()
-    from scheduler import start_scheduler
-    start_scheduler()
+    try:
+        _ensure_default_user()
+    except Exception as e:
+        print(f"[startup] Warning: failed to ensure default user: {e}")
+    try:
+        from scheduler import start_scheduler
+        start_scheduler()
+    except Exception as e:
+        print(f"[startup] Warning: failed to start scheduler: {e}")
 
 
 @app.on_event("shutdown")
