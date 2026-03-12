@@ -515,6 +515,7 @@ function MultipliedVideosTab() {
   const [modalVideo, setModalVideo] = useState<MultipliedVideo | null>(null);
   const [moreChannels, setMoreChannels] = useState(3);
   const [moreProcessVideo, setMoreProcessVideo] = useState(true);
+  const [moreGapMinutes, setMoreGapMinutes] = useState(0);
   const [multiplying, setMultiplying] = useState(false);
 
   const fetchVideos = useCallback(async () => {
@@ -542,7 +543,7 @@ function MultipliedVideosTab() {
           video_ids: [modalVideo.video_id],
           n_channels: 0,
           process_video: moreProcessVideo,
-          gap_minutes: gapMinutes,
+          gap_minutes: moreGapMinutes,
         }),
       });
       const d = await res.json();
