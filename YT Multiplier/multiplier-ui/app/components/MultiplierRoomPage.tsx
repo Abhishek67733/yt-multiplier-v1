@@ -127,6 +127,7 @@ function ShortCard({
   multiplyOpen, onOpenMultiply, onCloseMultiply,
   nChannels, setNChannels,
   processVideo, setProcessVideo,
+  gapMinutes, setGapMinutes,
   onMultiply, multiplying, multiplyProgress, multiplyResult,
 }: {
   short: MultiplierShort; selected: boolean; expanded: boolean;
@@ -135,6 +136,7 @@ function ShortCard({
   multiplyOpen: boolean; onOpenMultiply: () => void; onCloseMultiply: () => void;
   nChannels: number; setNChannels: (v: number) => void;
   processVideo: boolean; setProcessVideo: (v: boolean) => void;
+  gapMinutes: number; setGapMinutes: (v: number) => void;
   onMultiply: () => void; multiplying: boolean;
   multiplyProgress: { completed: number; total: number; errors: number } | null;
   multiplyResult: any;
@@ -368,15 +370,15 @@ function ShortCard({
                 </button>
               </div>
 
-              {/* Sliders */}
+              {/* Delay slider + target channels */}
               <div className="flex items-end gap-8">
                 <div className="flex-1">
                   <div className="flex justify-between items-center mb-1.5">
-                    <span className="text-xs text-[#777]">Channels per video</span>
-                    <span className="text-sm font-bold text-white">{nChannels}</span>
+                    <span className="text-xs text-[#777]">Delay between uploads</span>
+                    <span className="text-sm font-bold text-white">{gapMinutes === 0 ? "No delay" : `${gapMinutes} min`}</span>
                   </div>
-                  <SliderTrack value={nChannels} min={1} max={30} onChange={setNChannels}
-                    labels={["1", "5", "10", "15", "20", "25", "30"]} />
+                  <SliderTrack value={gapMinutes} min={0} max={120} step={5} onChange={setGapMinutes}
+                    labels={["0", "30", "60", "90", "120"]} />
                 </div>
               </div>
 
@@ -454,7 +456,7 @@ function ShortCard({
                 {multiplying ? (
                   <><Loader2 className="w-4 h-4 animate-spin" /> Multiplying — uploading to YouTube...</>
                 ) : (
-                  <>Multiply × {nChannels} channels</>
+                  <>Multiply to all {nChannels || "target"} channels{gapMinutes > 0 ? ` (${gapMinutes}min gap)` : ""}</>
                 )}
               </button>
             </div>
@@ -538,8 +540,9 @@ function MultipliedVideosTab() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           video_ids: [modalVideo.video_id],
-          n_channels: moreChannels,
+          n_channels: 0,
           process_video: moreProcessVideo,
+          gap_minutes: gapMinutes,
         }),
       });
       const d = await res.json();
@@ -1122,8 +1125,10 @@ export default function MultiplierRoomPage() {
   const PAGE_SIZE = 15;
 
   // Per-row multiply config (shared sliders, one panel open at a time)
-  const [nChannels, setNChannels] = useState(5);
+  const [nChannels, setNChannels] = useState(0); // 0 = all target channels
   const [processVideo, setProcessVideo] = useState(true);
+  const [gapMinutes, setGapMinutes] = useState(0); // delay between uploads in minutes
+  const [targetChannels, setTargetChannels] = useState<{ id: number; channel_name: string; channel_id: string }[]>([]);
   // Per-video multiply state (keyed by video_id)
   const [multiplyingFor, setMultiplyingFor] = useState<string | null>(null);
   const [multiplyProgressFor, setMultiplyProgressFor] = useState<Record<string, { completed: number; total: number; errors: number }>>({});
@@ -1171,12 +1176,20 @@ export default function MultiplierRoomPage() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/shorts/multiplier-room`);
-      if (!res.ok) throw new Error(`API error (${res.status})`);
-      const s = await res.json();
-      setShorts(Array.isArray(s) ? s : []);
+      const [shortsRes, targetsRes] = await Promise.all([
+        fetch(`${API}/shorts/multiplier-room`),
+        fetch(`${API}/channels/target`),
+      ]);
+      if (shortsRes.ok) {
+        const s = await shortsRes.json();
+        setShorts(Array.isArray(s) ? s : []);
+      }
+      if (targetsRes.ok) {
+        const t = await targetsRes.json();
+        setTargetChannels(Array.isArray(t) ? t : []);
+      }
     } catch (e: any) {
-      console.error("Failed to fetch multiplier room shorts:", e);
+      console.error("Failed to fetch multiplier room data:", e);
     }
     finally { setLoading(false); }
   }, []);
@@ -1236,12 +1249,13 @@ export default function MultiplierRoomPage() {
           video_ids: [videoId],
           n_channels: nChannels,
           process_video: processVideo,
+          gap_minutes: gapMinutes,
         }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.detail || "Failed");
       if (d.total_webhooks === 0) { setMultiplyingFor(null); return; }
-      success(`Multiplying! Uploading to ${d.total_webhooks} channels...`);
+      success(`Multiplying! Uploading to ${d.channel_names?.join(", ") || d.total_webhooks + " channels"}...`);
       setMultiplyProgressFor((prev) => ({ ...prev, [videoId]: { completed: 0, total: d.total_webhooks, errors: 0 } }));
       const poll = async () => {
         try {
@@ -1277,6 +1291,7 @@ export default function MultiplierRoomPage() {
           video_ids: Array.from(selected),
           n_channels: nChannels,
           process_video: processVideo,
+          gap_minutes: gapMinutes,
         }),
       });
       const d = await res.json();
@@ -1293,7 +1308,7 @@ export default function MultiplierRoomPage() {
         return;
       }
 
-      success(`Multiplying! Uploading to ${d.total_webhooks} channels directly...`);
+      success(`Multiplying! Uploading to ${d.channel_names?.join(", ") || d.total_webhooks + " channels"}${d.gap_minutes > 0 ? ` (${d.gap_minutes}min gap)` : ""}...`);
       setMultiplyProgress({ completed: 0, total: d.total_webhooks, errors: 0 });
 
       const poll = async () => {
@@ -1450,15 +1465,39 @@ export default function MultiplierRoomPage() {
             </div>
           </div>
 
+          {/* Target Channels */}
+          <div className="bg-[#0A0A0A] rounded-xl p-3 border border-[#1A1A1A]">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-xs text-[#777]">Target Channels</span>
+              <span className="text-sm font-bold text-emerald-400">{targetChannels.length} connected</span>
+            </div>
+            {targetChannels.length === 0 ? (
+              <p className="text-[11px] text-red-400">No target channels. Add channels in Target Channels tab first.</p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {targetChannels.map((tc) => (
+                  <span key={tc.id} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-[#1A1A1A] border border-[#2A2A2A] text-[11px] text-white">
+                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    {tc.channel_name}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-4">
+              {/* Upload Delay Slider */}
               <div>
                 <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs text-[#777]">Channels per video</span>
-                  <span className="text-sm font-bold text-white">{nChannels}</span>
+                  <span className="text-xs text-[#777]">Delay between uploads</span>
+                  <span className="text-sm font-bold text-white">{gapMinutes === 0 ? "No delay" : `${gapMinutes} min`}</span>
                 </div>
-                <SliderTrack value={nChannels} min={1} max={30} onChange={setNChannels}
-                  labels={["1", "5", "10", "15", "20", "25", "30"]} />
+                <SliderTrack value={gapMinutes} min={0} max={120} step={5} onChange={setGapMinutes}
+                  labels={["0", "15", "30", "60", "90", "120"]} />
+                <p className="text-[10px] text-[#444] mt-1">
+                  {gapMinutes === 0 ? "All uploads run back-to-back" : `~${Math.round((selected.size * targetChannels.length * gapMinutes) / 60)}h total for all uploads`}
+                </p>
               </div>
             </div>
 
@@ -1478,14 +1517,18 @@ export default function MultiplierRoomPage() {
               </button>
 
               <div className="bg-[#0A0A0A] rounded-xl p-3 border border-[#1A1A1A]">
-                <div className="grid grid-cols-2 gap-3 text-center">
+                <div className="grid grid-cols-3 gap-3 text-center">
                   <div>
                     <p className="text-[10px] text-[#444]">Videos</p>
                     <p className="text-lg font-bold text-white">{selected.size}</p>
                   </div>
                   <div>
+                    <p className="text-[10px] text-[#444]">Channels</p>
+                    <p className="text-lg font-bold text-white">{targetChannels.length}</p>
+                  </div>
+                  <div>
                     <p className="text-[10px] text-[#444]">Total Uploads</p>
-                    <p className="text-lg font-bold text-orange-400">{selected.size * nChannels}</p>
+                    <p className="text-lg font-bold text-orange-400">{selected.size * targetChannels.length}</p>
                   </div>
                 </div>
               </div>
@@ -1577,7 +1620,7 @@ export default function MultiplierRoomPage() {
             {multiplying ? (
               <><Loader2 className="w-4 h-4 animate-spin" /> Multiplying &mdash; uploading to YouTube...</>
             ) : (
-              <><Send className="w-4 h-4" /> Multiply {selected.size} videos &times; {nChannels} channels = {selected.size * nChannels} uploads</>
+              <><Send className="w-4 h-4" /> Multiply {selected.size} videos &times; {targetChannels.length} channels = {selected.size * targetChannels.length} uploads{gapMinutes > 0 ? ` (${gapMinutes}min gap)` : ""}</>
             )}
           </RainbowButton>
         </div>
@@ -1643,6 +1686,7 @@ export default function MultiplierRoomPage() {
                     onCloseMultiply={() => setMultiplyOpenFor(null)}
                     nChannels={nChannels} setNChannels={setNChannels}
                     processVideo={processVideo} setProcessVideo={setProcessVideo}
+                    gapMinutes={gapMinutes} setGapMinutes={setGapMinutes}
                     onMultiply={() => handleMultiplySingle(s.video_id)}
                     multiplying={multiplyingFor === s.video_id}
                     multiplyProgress={multiplyProgressFor[s.video_id] || null}

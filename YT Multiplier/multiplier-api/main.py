@@ -188,10 +188,9 @@ class WebhookTestRequest(BaseModel):
 
 class MultiplyViaWebhookRequest(BaseModel):
     video_ids: list[str]
-    n_channels: int = 5
-    gap_hours: float = 2
+    n_channels: int = 0  # 0 = all available target channels
+    gap_minutes: int = 0  # delay in minutes between each upload (0 = no delay)
     process_video: bool = True
-    use_peak_hours: bool = True
 
 
 # ── Source Channels ────────────────────────────────────────────────────────────
@@ -886,8 +885,13 @@ def multiply_direct(body: MultiplyViaWebhookRequest, background_tasks: Backgroun
     if not targets:
         raise HTTPException(400, "No target channels configured. Add target channels with YouTube OAuth first.")
 
-    # Limit to n_channels
-    selected_targets = targets[:body.n_channels]
+    # Filter to only channels that have OAuth credentials
+    targets_with_auth = [t for t in targets if t.get("oauth_credentials")]
+    if not targets_with_auth:
+        raise HTTPException(400, "No target channels have OAuth credentials. Re-authenticate your channels.")
+
+    # Use all channels if n_channels=0, otherwise limit
+    selected_targets = targets_with_auth if body.n_channels <= 0 else targets_with_auth[:body.n_channels]
 
     # Check which video+channel combos already uploaded
     skipped = []
@@ -917,13 +921,15 @@ def multiply_direct(body: MultiplyViaWebhookRequest, background_tasks: Backgroun
     }
 
     if valid_video_ids:
-        background_tasks.add_task(_run_direct_upload, valid_video_ids, video_target_map, body.process_video, user_id)
+        background_tasks.add_task(_run_direct_upload, valid_video_ids, video_target_map, body.process_video, user_id, body.gap_minutes)
 
     return {
         "status": "multiply_started",
         "videos": len(valid_video_ids),
         "channels_per_video": len(selected_targets),
+        "channel_names": [t["channel_name"] for t in selected_targets],
         "total_webhooks": total_uploads,
+        "gap_minutes": body.gap_minutes,
         "skipped": skipped,
     }
 
@@ -938,11 +944,13 @@ def multiply_status():
     }
 
 
-def _run_direct_upload(video_ids, video_target_map, do_process, user_id):
+def _run_direct_upload(video_ids, video_target_map, do_process, user_id, gap_minutes=0):
     """Download each video, generate AI titles, then upload directly to each target channel via YouTube API."""
+    import time as _time
     results = []
     errors = []
     cleanup_files = []
+    upload_counter = 0  # tracks total uploads done for delay logic
 
     for vid_id in video_ids:
         short_data = supabase.table("shorts").select("*").eq("video_id", vid_id).eq("user_id", user_id).execute().data
@@ -998,6 +1006,15 @@ def _run_direct_upload(video_ids, video_target_map, do_process, user_id):
             target_id = target["id"]
             picked_title = shuffled_titles[idx % len(shuffled_titles)]
 
+            # Delay between uploads if configured
+            if gap_minutes > 0 and upload_counter > 0:
+                delay_secs = gap_minutes * 60
+                print(f"[multiply] Waiting {gap_minutes}min before next upload ({channel_name})...")
+                _multiply_state["progress"]["waiting"] = True
+                _multiply_state["progress"]["next_upload_at"] = (datetime.now(timezone.utc) + timedelta(minutes=gap_minutes)).isoformat()
+                _time.sleep(delay_secs)
+                _multiply_state["progress"]["waiting"] = False
+
             # Optionally process video for uniqueness
             send_path = tmp_path
             if do_process:
@@ -1051,6 +1068,7 @@ def _run_direct_upload(video_ids, video_target_map, do_process, user_id):
                 })
 
                 _multiply_state["progress"]["completed"] = _multiply_state["progress"].get("completed", 0) + 1
+                upload_counter += 1
 
                 # Log success (separate try so logging failure doesn't affect upload count)
                 try:
