@@ -866,6 +866,9 @@ interface WebhookLog {
   short_thumbnail: string;
   error_message: string | null;
   status: string;
+  uploaded_video_id: string | null;
+  uploaded_views: number;
+  uploaded_likes: number;
   created_at: string;
 }
 
@@ -1007,10 +1010,11 @@ function UploadLogTab() {
                   <table className="w-full text-[12px]">
                     <thead>
                       <tr className="text-[10px] uppercase tracking-wider text-[#ccc] border-b border-[#1A1A1A] bg-[#0D0D0D] font-semibold">
-                        <th className="text-left px-4 py-3 w-[28%]">Channel</th>
-                        <th className="text-left px-4 py-3 w-[34%]">New Title</th>
-                        <th className="text-left px-4 py-3 w-[12%]">Status</th>
-                        <th className="text-left px-4 py-3 w-[13%]">Request Sent</th>
+                        <th className="text-left px-4 py-3 w-[22%]">Channel</th>
+                        <th className="text-left px-4 py-3 w-[28%]">New Title</th>
+                        <th className="text-left px-4 py-3 w-[10%]">Status</th>
+                        <th className="text-left px-4 py-3 w-[15%]">Uploaded Short</th>
+                        <th className="text-left px-4 py-3 w-[12%]">Request Sent</th>
                         <th className="text-left px-4 py-3 w-[13%]">Sent At</th>
                       </tr>
                     </thead>
@@ -1043,6 +1047,21 @@ function UploadLogTab() {
                               </span>
                             )}
                           </td>
+                          <td className="px-4 py-3 align-middle">
+                            {log.uploaded_video_id ? (
+                              <a
+                                href={`https://www.youtube.com/shorts/${log.uploaded_video_id}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-lg font-medium bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors"
+                              >
+                                <ExternalLink className="w-2.5 h-2.5" /> Watch
+                              </a>
+                            ) : (
+                              <span className="text-[10px] text-[#333]">—</span>
+                            )}
+                          </td>
                           <td className="px-4 py-3 align-middle text-[11px] text-[#666] tabular-nums">{fmtTime(log.scheduled_at)}</td>
                           <td className="px-4 py-3 align-middle text-[11px] text-[#555] tabular-nums">{fmtTime(log.created_at)}</td>
                         </tr>
@@ -1069,10 +1088,30 @@ function UploadLogTab() {
                           <p className="text-[10px] text-[#444] uppercase tracking-wider mb-1">Caption Sent</p>
                           <p className="text-[11px] text-[#777] bg-[#111] rounded-lg p-3 border border-[#1A1A1A] whitespace-pre-wrap max-h-28 overflow-y-auto">{log.caption}</p>
                         </div>
+                        {log.uploaded_video_id && (
+                          <div className="flex items-center gap-3 bg-red-950/20 border border-red-800/20 rounded-lg p-3">
+                            <a
+                              href={`https://www.youtube.com/shorts/${log.uploaded_video_id}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-2 text-[12px] px-3 py-1.5 rounded-lg font-medium bg-red-500/15 text-red-400 border border-red-500/25 hover:bg-red-500/25 transition-colors"
+                            >
+                              <ExternalLink className="w-3 h-3" /> Watch on YouTube
+                            </a>
+                            <span className="text-[11px] text-[#555] font-mono">{log.uploaded_video_id}</span>
+                            {(log.uploaded_views > 0 || log.uploaded_likes > 0) && (
+                              <span className="text-[11px] text-[#666]">
+                                {log.uploaded_views > 0 && <>{log.uploaded_views.toLocaleString()} views</>}
+                                {log.uploaded_views > 0 && log.uploaded_likes > 0 && " · "}
+                                {log.uploaded_likes > 0 && <>{log.uploaded_likes.toLocaleString()} likes</>}
+                              </span>
+                            )}
+                          </div>
+                        )}
                         <div className="grid grid-cols-4 gap-3 text-[11px]">
                           <div>
-                            <span className="text-[#444]">Webhook: </span>
-                            <span className="text-[#888]">HTTP {log.webhook_status}</span>
+                            <span className="text-[#444]">Upload: </span>
+                            <span className="text-[#888]">{log.webhook_url?.startsWith("youtube-direct") ? "Direct YouTube" : `HTTP ${log.webhook_status}`}</span>
                           </div>
                           <div>
                             <span className="text-[#444]">Velocity: </span>
