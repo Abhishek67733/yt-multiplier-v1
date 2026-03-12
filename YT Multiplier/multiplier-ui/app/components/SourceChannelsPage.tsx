@@ -498,9 +498,18 @@ export default function SourceChannelsPage() {
   };
 
   const handleRemove = async (id: string) => {
-    await fetch(`${API}/channels/source/${encodeURIComponent(id)}`, { method: "DELETE" });
-    success("Channel removed");
-    await fetchAll();
+    try {
+      const res = await fetch(`${API}/channels/source/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.detail || `Delete failed (${res.status})`);
+      }
+      setChannels((prev) => prev.filter((ch) => ch.id !== id));
+      setShorts((prev) => prev.filter((s) => s.channel_id !== id));
+      success("Channel removed");
+    } catch (e: any) {
+      error(e.message || "Failed to remove channel");
+    }
   };
 
   const handleScan = async () => {

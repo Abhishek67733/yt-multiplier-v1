@@ -517,9 +517,13 @@ function MultipliedVideosTab() {
 
   const fetchVideos = useCallback(async () => {
     try {
-      const data = await fetch(`${API}/upload/multiplied-videos`).then((r) => r.json());
+      const res = await fetch(`${API}/upload/multiplied-videos`);
+      if (!res.ok) throw new Error(`API error (${res.status})`);
+      const data = await res.json();
       setVideos(Array.isArray(data) ? data : []);
-    } catch {}
+    } catch (e: any) {
+      console.error("Failed to fetch multiplied videos:", e);
+    }
     finally { setLoading(false); }
   }, []);
 
@@ -895,13 +899,19 @@ function UploadLogTab() {
 
   const fetchLogs = useCallback(async () => {
     try {
-      const [logsRes, summaryRes] = await Promise.all([
-        fetch(`${API}/upload/webhook-logs`).then((r) => r.json()),
-        fetch(`${API}/upload/webhook-logs/summary`).then((r) => r.json()),
+      const [logsResponse, summaryResponse] = await Promise.all([
+        fetch(`${API}/upload/webhook-logs`),
+        fetch(`${API}/upload/webhook-logs/summary`),
       ]);
-      setLogs(Array.isArray(logsRes) ? logsRes : []);
-      setSummary(summaryRes);
-    } catch {}
+      if (!logsResponse.ok) throw new Error(`Logs API error (${logsResponse.status})`);
+      if (!summaryResponse.ok) throw new Error(`Summary API error (${summaryResponse.status})`);
+      const logsData = await logsResponse.json();
+      const summaryData = await summaryResponse.json();
+      setLogs(Array.isArray(logsData) ? logsData : []);
+      setSummary(summaryData);
+    } catch (e: any) {
+      console.error("Failed to fetch upload logs:", e);
+    }
     finally { setLoading(false); }
   }, []);
 
@@ -1161,9 +1171,13 @@ export default function MultiplierRoomPage() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const s = await fetch(`${API}/shorts/multiplier-room`).then((r) => r.json());
+      const res = await fetch(`${API}/shorts/multiplier-room`);
+      if (!res.ok) throw new Error(`API error (${res.status})`);
+      const s = await res.json();
       setShorts(Array.isArray(s) ? s : []);
-    } catch { }
+    } catch (e: any) {
+      console.error("Failed to fetch multiplier room shorts:", e);
+    }
     finally { setLoading(false); }
   }, []);
 
