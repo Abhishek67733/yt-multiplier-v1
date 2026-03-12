@@ -226,9 +226,35 @@ def enrich_source_channels(user_id: str = Depends(get_user_id)):
     return {"updated": updated}
 
 
-@app.delete("/channels/source/{channel_id}", status_code=204)
+@app.delete("/channels/source/{channel_id:path}", status_code=204)
 def remove_source_channel(channel_id: str, user_id: str = Depends(get_user_id)):
+    print(f"[DELETE] channel_id={channel_id!r}, user_id={user_id!r}")
+    # First check if channel exists at all
+    check = supabase.table("source_channels").select("id, user_id").eq("id", channel_id).execute()
+    print(f"[DELETE] found rows: {check.data}")
+    if not check.data:
+        raise HTTPException(404, f"Channel {channel_id} not found")
+    result = supabase.table("source_channels").delete().eq("id", channel_id).eq("user_id", user_id).execute()
+    print(f"[DELETE] delete result: {result.data}")
+    # Also clean up any shorts for this channel
+    supabase.table("shorts").delete().eq("channel_id", channel_id).eq("user_id", user_id).execute()
+
+
+class DeleteChannelBody(BaseModel):
+    channel_id: str
+
+
+@app.post("/channels/source/delete", status_code=204)
+def remove_source_channel_post(body: DeleteChannelBody, user_id: str = Depends(get_user_id)):
+    """Alternative delete via POST body — avoids URL-encoding issues with channel IDs."""
+    channel_id = body.channel_id
+    print(f"[DELETE-POST] channel_id={channel_id!r}, user_id={user_id!r}")
+    check = supabase.table("source_channels").select("id, user_id").eq("id", channel_id).execute()
+    print(f"[DELETE-POST] found rows: {check.data}")
+    if not check.data:
+        raise HTTPException(404, f"Channel {channel_id} not found")
     supabase.table("source_channels").delete().eq("id", channel_id).eq("user_id", user_id).execute()
+    supabase.table("shorts").delete().eq("channel_id", channel_id).eq("user_id", user_id).execute()
 
 
 # ── YouTube OAuth Connect Flow ─────────────────────────────────────────────────

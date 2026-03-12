@@ -499,7 +499,11 @@ export default function SourceChannelsPage() {
 
   const handleRemove = async (id: string) => {
     try {
-      const res = await fetch(`${API}/channels/source/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const res = await fetch(`${API}/channels/source/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel_id: id }),
+      });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         throw new Error(d.detail || `Delete failed (${res.status})`);
