@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import json
 import base64
@@ -143,8 +144,8 @@ def get_or_create_me():
 
 class IdentifyRequest(BaseModel):
     email: str
-    name: str | None = None
-    avatar_url: str | None = None
+    name: Optional[str] = None
+    avatar_url: Optional[str] = None
 
 
 @app.post("/auth/identify")
@@ -577,11 +578,21 @@ def multiplier_room(user_id: str = Depends(get_user_id)):
         ch_rows = supabase.table("source_channels").select("id, name").in_("id", channel_ids).execute().data
         channel_names = {c["id"]: c["name"] for c in ch_rows}
 
+    # Batch-fetch all ai_titles for this user in one query
+    video_ids = [r["video_id"] for r in shorts_result.data]
+    titles_by_video: dict = {}
+    if video_ids:
+        # Supabase .in_() has a limit; chunk if needed
+        for i in range(0, len(video_ids), 200):
+            chunk = video_ids[i:i+200]
+            titles_rows = supabase.table("ai_titles").select("id, title, video_id").eq("user_id", user_id).in_("video_id", chunk).execute().data
+            for t in titles_rows:
+                titles_by_video.setdefault(t["video_id"], []).append({"id": t["id"], "title": t["title"]})
+
     result = []
     for r in shorts_result.data:
         r["channel_name"] = channel_names.get(r.get("channel_id"), "")
-        titles_result = supabase.table("ai_titles").select("id, title").eq("video_id", r["video_id"]).eq("user_id", user_id).order("generated_at", desc=True).execute()
-        r["ai_titles"] = titles_result.data
+        r["ai_titles"] = titles_by_video.get(r["video_id"], [])
         result.append(r)
     return result
 
