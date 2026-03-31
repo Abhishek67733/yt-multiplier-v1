@@ -1206,6 +1206,10 @@ def manual_refresh_stats(background_tasks: BackgroundTasks):
 def get_multiplied_videos(user_id: str = Depends(get_user_id)):
     rows = supabase.table("webhook_logs").select("id, video_id, original_title, channel_number, channel_name, new_title, status, scheduled_at, created_at, uploaded_video_id, uploaded_views, uploaded_likes, stats_updated_at").eq("user_id", user_id).eq("status", "sent").order("created_at", desc=True).execute().data
 
+    # Build channel_name → channel_id lookup from target_channels
+    target_rows = supabase.table("target_channels").select("channel_name, channel_id").eq("user_id", user_id).execute().data
+    channel_id_map = {r["channel_name"]: r["channel_id"] for r in target_rows}
+
     # Get shorts data for thumbnails etc
     video_ids = list(set(r["video_id"] for r in rows))
     shorts_map = {}
@@ -1238,9 +1242,12 @@ def get_multiplied_videos(user_id: str = Depends(get_user_id)):
         grouped[vid]["total_uploaded_likes"] += ul
         if r["stats_updated_at"] and (not grouped[vid]["stats_updated_at"] or r["stats_updated_at"] > grouped[vid]["stats_updated_at"]):
             grouped[vid]["stats_updated_at"] = r["stats_updated_at"]
+        ch_name = r["channel_name"]
+        ch_id = channel_id_map.get(ch_name, "")
         grouped[vid]["channels"].append({
             "channel_number": r["channel_number"],
-            "channel_name": r["channel_name"],
+            "channel_name": ch_name,
+            "channel_id": ch_id,
             "new_title": r["new_title"],
             "scheduled_at": r["scheduled_at"],
             "sent_at": r["created_at"],

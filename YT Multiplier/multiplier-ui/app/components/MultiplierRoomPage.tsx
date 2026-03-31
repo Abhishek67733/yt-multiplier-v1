@@ -481,6 +481,7 @@ const CHANNEL_MAP: Record<number, { name: string; url: string }> = {
 interface MultipliedChannel {
   channel_number: number;
   channel_name: string;
+  channel_id: string;
   new_title: string;
   scheduled_at: string;
   sent_at: string;
@@ -697,11 +698,13 @@ function MultipliedVideosTab() {
                             const mapped = CHANNEL_MAP[ch.channel_number];
                             const name = mapped?.name || ch.channel_name || `YT${ch.channel_number}`;
                             const label = name.length > 9 ? name.slice(0, 9) + "…" : name;
+                            const channelUrl = ch.channel_id ? `https://www.youtube.com/channel/${ch.channel_id}` : mapped?.url;
                             return (
-                              <span key={ch.channel_number} className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-white/10 text-white border border-white/20 whitespace-nowrap flex-shrink-0">
+                              <a key={ch.channel_number} href={channelUrl || "#"} target="_blank" rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-white/10 text-white border border-white/20 whitespace-nowrap flex-shrink-0 hover:bg-red-500/20 hover:border-red-500/40 hover:text-red-300 transition-colors">
                                 <span className="w-3.5 h-3.5 rounded-full bg-white/20 flex items-center justify-center text-[7px] text-white font-bold flex-shrink-0">{ch.channel_number}</span>
                                 {label}
-                              </span>
+                              </a>
                             );
                           })}
                           {hiddenCount > 0 && (
@@ -743,16 +746,25 @@ function MultipliedVideosTab() {
                             {v.channels.map((ch) => {
                               const mapped = CHANNEL_MAP[ch.channel_number];
                               const name = mapped?.name || ch.channel_name || `YT${ch.channel_number}`;
+                              const channelUrl = ch.channel_id ? `https://www.youtube.com/channel/${ch.channel_id}` : mapped?.url;
+                              const uploadedUrl = ch.uploaded_video_id ? `https://www.youtube.com/shorts/${ch.uploaded_video_id}` : null;
                               return (
-                                <div key={ch.channel_number} className="flex items-center gap-2.5 bg-[#111] border border-[#1C1C1C] rounded-xl px-3 py-2.5">
+                                <a key={ch.channel_number} href={channelUrl || "#"} target="_blank" rel="noopener noreferrer"
+                                  className="flex items-center gap-2.5 bg-[#111] border border-[#1C1C1C] rounded-xl px-3 py-2.5 hover:border-red-500/40 hover:bg-red-950/20 transition-colors group">
                                   <div className="w-7 h-7 rounded-full bg-white/15 border border-white/20 flex items-center justify-center text-[10px] text-white font-bold flex-shrink-0">
                                     {ch.channel_number}
                                   </div>
                                   <div className="flex-1 min-w-0">
-                                    <p className="text-[12px] text-white font-semibold truncate">{name}</p>
+                                    <p className="text-[12px] text-white font-semibold truncate group-hover:text-red-400 transition-colors">{name}</p>
                                     <p className="text-[10px] text-[#555] mt-0.5">{fmtTime(ch.sent_at)}</p>
                                   </div>
-                                </div>
+                                  {uploadedUrl && (
+                                    <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); window.open(uploadedUrl, "_blank"); }}
+                                      className="text-[9px] text-sky-500 hover:text-sky-300 cursor-pointer flex-shrink-0" title="View uploaded short">
+                                      <ExternalLink className="w-3 h-3" />
+                                    </span>
+                                  )}
+                                </a>
                               );
                             })}
                           </div>
