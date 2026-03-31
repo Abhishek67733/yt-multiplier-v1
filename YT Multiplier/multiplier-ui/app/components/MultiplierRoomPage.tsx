@@ -750,18 +750,21 @@ function MultipliedVideosTab() {
                               const uploadedUrl = ch.uploaded_video_id ? `https://www.youtube.com/shorts/${ch.uploaded_video_id}` : null;
                               return (
                                 <a key={ch.channel_number} href={channelUrl || "#"} target="_blank" rel="noopener noreferrer"
-                                  className="flex items-center gap-2.5 bg-[#111] border border-[#1C1C1C] rounded-xl px-3 py-2.5 hover:border-red-500/40 hover:bg-red-950/20 transition-colors group">
+                                  className="flex items-center gap-2.5 bg-[#111] border border-[#1C1C1C] rounded-xl px-3 py-2.5 hover:border-red-500/40 hover:bg-red-950/20 transition-colors group cursor-pointer">
                                   <div className="w-7 h-7 rounded-full bg-white/15 border border-white/20 flex items-center justify-center text-[10px] text-white font-bold flex-shrink-0">
                                     {ch.channel_number}
                                   </div>
                                   <div className="flex-1 min-w-0">
-                                    <p className="text-[12px] text-white font-semibold truncate group-hover:text-red-400 transition-colors">{name}</p>
+                                    <p className="text-[12px] text-white font-semibold truncate group-hover:text-red-400 group-hover:underline transition-colors">
+                                      {name}
+                                      <ExternalLink className="w-2.5 h-2.5 inline-block ml-1 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                    </p>
                                     <p className="text-[10px] text-[#555] mt-0.5">{fmtTime(ch.sent_at)}</p>
                                   </div>
                                   {uploadedUrl && (
                                     <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); window.open(uploadedUrl, "_blank"); }}
                                       className="text-[9px] text-sky-500 hover:text-sky-300 cursor-pointer flex-shrink-0" title="View uploaded short">
-                                      <ExternalLink className="w-3 h-3" />
+                                      <Play className="w-3.5 h-3.5" />
                                     </span>
                                   )}
                                 </a>
