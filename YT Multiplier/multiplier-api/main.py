@@ -1268,6 +1268,11 @@ def get_multiplied_videos(user_id: str = Depends(get_user_id)):
 @app.get("/upload/webhook-logs")
 def list_webhook_logs(limit: int = 200, user_id: str = Depends(get_user_id)):
     result = supabase.table("webhook_logs").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute()
+    # Enrich with channel_id from target_channels
+    target_rows = supabase.table("target_channels").select("channel_name, channel_id").eq("user_id", user_id).execute().data
+    ch_id_map = {r["channel_name"]: r["channel_id"] for r in target_rows}
+    for row in result.data:
+        row["channel_id"] = ch_id_map.get(row.get("channel_name"), "")
     return result.data
 
 

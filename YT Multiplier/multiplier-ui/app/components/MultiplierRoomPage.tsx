@@ -867,6 +867,7 @@ interface WebhookLog {
   caption: string;
   channel_number: number;
   channel_name: string;
+  channel_id: string;
   total_channels: number;
   file_size_bytes: number;
   video_processed: number;
@@ -1043,7 +1044,15 @@ function UploadLogTab() {
                               <div className="w-6 h-6 rounded-full bg-white/15 border border-white/20 flex items-center justify-center text-[9px] text-white font-bold flex-shrink-0">
                                 {log.channel_number}
                               </div>
-                              <span className="text-[13px] text-white font-medium truncate max-w-[150px]">{log.channel_name}</span>
+                              {log.channel_id ? (
+                                <a href={`https://www.youtube.com/channel/${log.channel_id}`} target="_blank" rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="text-[13px] text-white font-medium truncate max-w-[150px] hover:text-red-400 transition-colors">
+                                  {log.channel_name}
+                                </a>
+                              ) : (
+                                <span className="text-[13px] text-white font-medium truncate max-w-[150px]">{log.channel_name}</span>
+                              )}
                             </div>
                           </td>
                           <td className="px-4 py-3 align-middle">
