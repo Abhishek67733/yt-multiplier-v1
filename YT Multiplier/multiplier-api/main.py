@@ -569,7 +569,7 @@ MULTIPLIER_THRESHOLD = int(os.getenv("MULTIPLIER_THRESHOLD", "1000"))
 
 @app.get("/shorts/multiplier-room")
 def multiplier_room(user_id: str = Depends(get_user_id)):
-    shorts_result = supabase.table("shorts").select("*").eq("user_id", user_id).gte("views_delta", MULTIPLIER_THRESHOLD).neq("status", "done").order("velocity_score", desc=True).execute()
+    shorts_result = supabase.table("shorts").select("*").eq("user_id", user_id).gte("views_delta", MULTIPLIER_THRESHOLD).neq("status", "done").order("views_delta", desc=True).execute()
 
     # Build channel name lookup
     channel_ids = list({r.get("channel_id") for r in shorts_result.data if r.get("channel_id")})

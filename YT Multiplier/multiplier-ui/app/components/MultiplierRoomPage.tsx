@@ -1222,7 +1222,9 @@ export default function MultiplierRoomPage() {
       ]);
       if (shortsRes.ok) {
         const s = await shortsRes.json();
-        setShorts(Array.isArray(s) ? s : []);
+        const arr = Array.isArray(s) ? s : [];
+        arr.sort((a: MultiplierShort, b: MultiplierShort) => (b.views_delta || 0) - (a.views_delta || 0));
+        setShorts(arr);
       }
       if (targetsRes.ok) {
         const t = await targetsRes.json();
@@ -1705,7 +1707,7 @@ export default function MultiplierRoomPage() {
                   <th className="px-3 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-white/50">Short</th>
                   <th className="px-3 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-white/50">Channel</th>
                   <th className="px-3 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-white/50">Total Views</th>
-                  <th className="px-3 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-white/50">24h Delta</th>
+                  <th className="px-3 py-3 text-right text-[10px] font-semibold uppercase tracking-widest text-red-400/70">24h Delta <TrendingDown className="w-3 h-3 inline-block ml-0.5" /></th>
                   <th className="px-3 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-white/50">Original Title</th>
                   <th className="px-3 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-white/50">New Titles</th>
                   <th className="px-3 py-3 text-left text-[10px] font-semibold uppercase tracking-widest text-white/50">Actions</th>
