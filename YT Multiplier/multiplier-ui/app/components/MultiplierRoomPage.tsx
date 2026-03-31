@@ -8,6 +8,7 @@ import {
   Zap, TrendingUp, TrendingDown, Minus, Send, Shield,
   Activity, Target, ArrowRight, Check, X, FileText, Hash,
   Video, FileVideo, CircleCheck, CircleX, Database,
+  BarChart3, Download,
 } from "lucide-react";
 import { StatusBadge } from "./ui/Badge";
 import { useToast } from "./ui/Toast";
@@ -1171,11 +1172,277 @@ function UploadLogTab() {
 }
 
 
+// ── Analytics Tab ────────────────────────────────────────────────────────────
+
+function AnalyticsTab() {
+  const [videos, setVideos] = useState<MultipliedVideo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshingStats, setRefreshingStats] = useState(false);
+  const { success, error } = useToast();
+
+  const fetchVideos = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/upload/multiplied-videos`);
+      if (!res.ok) throw new Error(`API error (${res.status})`);
+      const data = await res.json();
+      setVideos(Array.isArray(data) ? data : []);
+    } catch (e: any) {
+      console.error("Failed to fetch analytics data:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchVideos(); }, [fetchVideos]);
+
+  const handleRefreshStats = async () => {
+    setRefreshingStats(true);
+    try {
+      await fetch(`${API}/upload/refresh-stats`, { method: "POST" });
+      success("Stats refresh started — updating in background...");
+      const poll = async () => {
+        await new Promise((r) => setTimeout(r, 4000));
+        await fetchVideos();
+        setRefreshingStats(false);
+      };
+      poll();
+    } catch { setRefreshingStats(false); }
+  };
+
+  // Summary computations
+  const totalVideos = videos.length;
+  const totalRepostViews = videos.reduce((a, v) => a + (v.total_uploaded_views || 0), 0);
+  const totalOriginalViews = videos.reduce((a, v) => a + (v.original_views || 0), 0);
+  const totalReposts = videos.reduce((a, v) => a + v.channels.length, 0);
+  const avgViewsPerRepost = totalReposts > 0 ? Math.round(totalRepostViews / totalReposts) : 0;
+
+  // Best channel by total views
+  const channelViewsMap: Record<string, number> = {};
+  videos.forEach(v => v.channels.forEach(ch => {
+    const name = ch.channel_name || `Channel ${ch.channel_number}`;
+    channelViewsMap[name] = (channelViewsMap[name] || 0) + (ch.uploaded_views || 0);
+  }));
+  const bestChannel = Object.entries(channelViewsMap).sort((a, b) => b[1] - a[1])[0];
+
+  // CSV Export
+  const exportCSV = () => {
+    const headers = [
+      "Video Title", "Video ID", "Original URL", "Original Views", "Original Likes",
+      "Channel Name", "Channel ID", "Uploaded Video ID", "Uploaded Short URL",
+      "Uploaded Views", "Uploaded Likes", "Sent At",
+    ];
+    const rows: string[][] = [];
+    videos.forEach(v => {
+      v.channels.forEach(ch => {
+        rows.push([
+          `"${(v.title || "").replace(/"/g, '""')}"`,
+          v.video_id,
+          v.original_url,
+          String(v.original_views || 0),
+          String(v.original_likes || 0),
+          `"${(ch.channel_name || "").replace(/"/g, '""')}"`,
+          ch.channel_id || "",
+          ch.uploaded_video_id || "",
+          ch.uploaded_video_id ? `https://www.youtube.com/shorts/${ch.uploaded_video_id}` : "",
+          String(ch.uploaded_views || 0),
+          String(ch.uploaded_likes || 0),
+          ch.sent_at || "",
+        ]);
+      });
+    });
+    const csv = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `yt-multiplier-analytics-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-5">
+      {/* Action bar */}
+      <div className="flex items-center justify-end gap-3">
+        <button
+          onClick={handleRefreshStats}
+          disabled={refreshingStats}
+          className="flex items-center gap-1.5 text-[11px] text-sky-500 hover:text-sky-400 transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={`w-3 h-3 ${refreshingStats ? "animate-spin" : ""}`} />
+          {refreshingStats ? "Refreshing..." : "Refresh Stats"}
+        </button>
+        <button
+          onClick={exportCSV}
+          disabled={videos.length === 0}
+          className="flex items-center gap-1.5 text-[11px] text-emerald-500 hover:text-emerald-400 transition-colors disabled:opacity-50"
+        >
+          <Download className="w-3 h-3" />
+          Export CSV
+        </button>
+        <button
+          onClick={() => { setLoading(true); fetchVideos(); }}
+          className="flex items-center gap-1.5 text-[11px] text-[#666] hover:text-white transition-colors"
+        >
+          <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> Reload
+        </button>
+      </div>
+
+      {/* Summary stat cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard value={String(totalVideos)} label="Videos Multiplied" sub="original shorts picked" variant="grey" />
+        <StatCard value={fmt(totalOriginalViews)} label="Original Views" sub="combined source views" variant="grey" />
+        <StatCard value={fmt(totalRepostViews)} label="Repost Views" sub="across all channels" variant="grey" />
+        <StatCard value={bestChannel ? bestChannel[0].length > 14 ? bestChannel[0].slice(0, 14) + "…" : bestChannel[0] : "—"} label="Best Channel" sub={bestChannel ? `${fmt(bestChannel[1])} total views` : "no data yet"} variant="grey" />
+      </div>
+
+      {/* Secondary stats */}
+      <div className="grid grid-cols-3 gap-3">
+        <StatCard value={String(totalReposts)} label="Total Uploads" sub="channel uploads done" variant="grey" />
+        <StatCard value={fmt(avgViewsPerRepost)} label="Avg Views / Upload" sub="per channel repost" variant="grey" />
+        <StatCard
+          value={totalOriginalViews > 0 ? `${((totalRepostViews / totalOriginalViews) * 100).toFixed(1)}%` : "—"}
+          label="Reach Multiplier"
+          sub="repost views vs original"
+          variant="grey"
+        />
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="w-6 h-6 text-[#444] animate-spin" />
+        </div>
+      ) : videos.length === 0 ? (
+        <div className="bg-[#111] border border-dashed border-[#1C1C1C] rounded-2xl py-20 text-center">
+          <BarChart3 className="w-10 h-10 text-[#333] mx-auto mb-3" />
+          <p className="text-[#555] text-sm">No analytics data yet</p>
+          <p className="text-[#333] text-xs mt-1">Multiply some shorts first, then refresh stats</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {videos.map((v) => {
+            const repostViews = v.total_uploaded_views || 0;
+            const reachPct = v.original_views > 0 ? ((repostViews / v.original_views) * 100).toFixed(1) : "0";
+            return (
+              <div key={v.video_id} className="bg-[#111] border border-[#1C1C1C] rounded-2xl overflow-hidden">
+                {/* Video header */}
+                <div className="flex items-center gap-4 px-5 py-4 border-b border-[#1a1a1a]">
+                  <img
+                    src={thumbUrl(v.thumbnail, v.video_id)}
+                    alt=""
+                    className="w-20 h-14 rounded-xl object-cover flex-shrink-0 ring-1 ring-white/5"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <a
+                      href={v.original_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[13px] font-semibold text-white hover:text-red-400 transition-colors line-clamp-1"
+                    >
+                      {v.title}
+                    </a>
+                    <div className="flex items-center gap-4 mt-1 text-[11px] text-[#666]">
+                      <span className="flex items-center gap-1"><Eye className="w-3 h-3" />{fmt(v.original_views)} original views</span>
+                      <span className="flex items-center gap-1"><ThumbsUp className="w-3 h-3" />{fmt(v.original_likes)}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-5 flex-shrink-0">
+                    <div className="text-center">
+                      <p className="text-[16px] font-bold text-sky-400 tabular-nums">{fmt(repostViews)}</p>
+                      <p className="text-[9px] text-[#555] uppercase">Repost Views</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[16px] font-bold text-orange-400 tabular-nums">{v.multiplier}x</p>
+                      <p className="text-[9px] text-[#555] uppercase">Channels</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[16px] font-bold text-violet-400 tabular-nums">{reachPct}%</p>
+                      <p className="text-[9px] text-[#555] uppercase">Reach</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Channel performance table */}
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="border-b border-[#222] bg-[#0D0D0D]">
+                      <th className="px-5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-[#ccc] w-[5%]">#</th>
+                      <th className="px-5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-[#ccc] w-[25%]">Channel</th>
+                      <th className="px-5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-[#ccc] w-[15%]">Uploaded Short</th>
+                      <th className="px-5 py-2.5 text-right text-[10px] font-semibold uppercase tracking-widest text-[#ccc] w-[15%]">Views</th>
+                      <th className="px-5 py-2.5 text-right text-[10px] font-semibold uppercase tracking-widest text-[#ccc] w-[12%]">Likes</th>
+                      <th className="px-5 py-2.5 text-right text-[10px] font-semibold uppercase tracking-widest text-[#ccc] w-[13%]">% of Original</th>
+                      <th className="px-5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-[#ccc] w-[15%]">Uploaded</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {v.channels
+                      .slice()
+                      .sort((a, b) => (b.uploaded_views || 0) - (a.uploaded_views || 0))
+                      .map((ch, idx) => {
+                        const chViews = ch.uploaded_views || 0;
+                        const chPct = v.original_views > 0 ? ((chViews / v.original_views) * 100).toFixed(1) : "0";
+                        const channelUrl = ch.channel_id ? `https://www.youtube.com/channel/${ch.channel_id}` : "#";
+                        const uploadedUrl = ch.uploaded_video_id ? `https://www.youtube.com/shorts/${ch.uploaded_video_id}` : null;
+                        return (
+                          <tr key={ch.channel_number} className="border-b border-[#1a1a1a] hover:bg-white/[0.02] transition-colors">
+                            <td className="px-5 py-3 text-[11px] text-[#555] tabular-nums">{idx + 1}</td>
+                            <td className="px-5 py-3">
+                              <a
+                                href={channelUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[12px] text-white font-medium hover:text-red-400 transition-colors"
+                              >
+                                {ch.channel_name || `Channel ${ch.channel_number}`}
+                              </a>
+                            </td>
+                            <td className="px-5 py-3">
+                              {uploadedUrl ? (
+                                <a
+                                  href={uploadedUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-lg font-medium bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors"
+                                >
+                                  <ExternalLink className="w-2.5 h-2.5" /> Watch
+                                </a>
+                              ) : (
+                                <span className="text-[10px] text-[#333]">—</span>
+                              )}
+                            </td>
+                            <td className="px-5 py-3 text-right">
+                              <span className="text-[13px] font-bold text-sky-400 tabular-nums">{chViews > 0 ? fmt(chViews) : "—"}</span>
+                            </td>
+                            <td className="px-5 py-3 text-right">
+                              <span className="text-[13px] text-[#888] tabular-nums">{(ch.uploaded_likes || 0) > 0 ? fmt(ch.uploaded_likes) : "—"}</span>
+                            </td>
+                            <td className="px-5 py-3 text-right">
+                              <span className={`text-[12px] font-semibold tabular-nums ${parseFloat(chPct) >= 10 ? "text-emerald-400" : parseFloat(chPct) >= 1 ? "text-amber-400" : "text-[#555]"}`}>
+                                {chViews > 0 ? `${chPct}%` : "—"}
+                              </span>
+                            </td>
+                            <td className="px-5 py-3 text-[11px] text-[#555] tabular-nums">{fmtTime(ch.sent_at)}</td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ── Main Component ───────────────────────────────────────────────────────────
 
 export default function MultiplierRoomPage() {
   const { success, error } = useToast();
-  const [subTab, setSubTab] = useState<"shorts" | "multiplied" | "logs">("shorts");
+  const [subTab, setSubTab] = useState<"shorts" | "multiplied" | "logs" | "analytics">("shorts");
   const [shorts, setShorts] = useState<MultiplierShort[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -1501,6 +1768,17 @@ export default function MultiplierRoomPage() {
             <FileText className={`w-3.5 h-3.5 ${subTab === "logs" ? "text-sky-400" : "text-[#666]"}`} />
             Upload Log
           </button>
+          <button
+            onClick={() => setSubTab("analytics")}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12px] font-medium transition-all ${
+              subTab === "analytics"
+                ? "bg-white/10 text-white"
+                : "text-[#888] hover:text-[#ccc]"
+            }`}
+          >
+            <BarChart3 className={`w-3.5 h-3.5 ${subTab === "analytics" ? "text-violet-400" : "text-[#666]"}`} />
+            Analytics
+          </button>
         </div>
       </div>
 
@@ -1509,6 +1787,9 @@ export default function MultiplierRoomPage() {
 
       {/* Upload Log sub-tab */}
       {subTab === "logs" && <UploadLogTab />}
+
+      {/* Analytics sub-tab */}
+      {subTab === "analytics" && <AnalyticsTab />}
 
       {/* Viral Shorts sub-tab content */}
       {subTab === "shorts" && <>
