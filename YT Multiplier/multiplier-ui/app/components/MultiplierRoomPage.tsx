@@ -126,7 +126,7 @@ function SliderTrack({ value, min, max, step, onChange, labels }: {
 function ShortCard({
   short, selected, expanded, onSelect, onExpand, onGenerateTitles, generating,
   multiplyOpen, onOpenMultiply, onCloseMultiply,
-  nChannels, setNChannels,
+  nChannels, setNChannels, targetChannelCount,
   processVideo, setProcessVideo,
   gapMinutes, setGapMinutes,
   onMultiply, multiplying, multiplyProgress, multiplyResult,
@@ -135,7 +135,7 @@ function ShortCard({
   onSelect: () => void; onExpand: () => void;
   onGenerateTitles: () => void; generating: boolean;
   multiplyOpen: boolean; onOpenMultiply: () => void; onCloseMultiply: () => void;
-  nChannels: number; setNChannels: (v: number) => void;
+  nChannels: number; setNChannels: (v: number) => void; targetChannelCount: number;
   processVideo: boolean; setProcessVideo: (v: boolean) => void;
   gapMinutes: number; setGapMinutes: (v: number) => void;
   onMultiply: () => void; multiplying: boolean;
@@ -375,9 +375,9 @@ function ShortCard({
               <div>
                 <div className="flex justify-between items-center mb-1.5">
                   <span className="text-xs text-[#777]">Number of channels</span>
-                  <span className="text-sm font-bold text-white">{nChannels === 0 ? `All (${targetChannels.length})` : nChannels}</span>
+                  <span className="text-sm font-bold text-white">{nChannels === 0 ? `All (${targetChannelCount})` : nChannels}</span>
                 </div>
-                <SliderTrack value={nChannels} min={0} max={Math.max(targetChannels.length, 30)} onChange={setNChannels}
+                <SliderTrack value={nChannels} min={0} max={Math.max(targetChannelCount, 30)} onChange={setNChannels}
                   labels={["All", "5", "10", "15", "20", "25", "30"]} />
                 <p className="text-[10px] text-[#444] mt-1">
                   {nChannels === 0 ? "Will upload to all connected target channels" : `Will upload to ${nChannels} channels`}
@@ -468,7 +468,7 @@ function ShortCard({
                 {multiplying ? (
                   <><Loader2 className="w-4 h-4 animate-spin" /> Multiplying — uploading to YouTube...</>
                 ) : (
-                  <>Multiply to {nChannels === 0 ? `all ${targetChannels.length}` : nChannels} channels{gapMinutes > 0 ? ` (${gapMinutes}min gap)` : ""}</>
+                  <>Multiply to {nChannels === 0 ? `all ${targetChannelCount}` : nChannels} channels{gapMinutes > 0 ? ` (${gapMinutes}min gap)` : ""}</>
                 )}
               </button>
             </div>
@@ -2042,7 +2042,7 @@ export default function MultiplierRoomPage() {
                     multiplyOpen={multiplyOpenFor === s.video_id}
                     onOpenMultiply={() => setMultiplyOpenFor(s.video_id)}
                     onCloseMultiply={() => setMultiplyOpenFor(null)}
-                    nChannels={nChannels} setNChannels={setNChannels}
+                    nChannels={nChannels} setNChannels={setNChannels} targetChannelCount={targetChannels.length}
                     processVideo={processVideo} setProcessVideo={setProcessVideo}
                     gapMinutes={gapMinutes} setGapMinutes={setGapMinutes}
                     onMultiply={() => handleMultiplySingle(s.video_id)}
