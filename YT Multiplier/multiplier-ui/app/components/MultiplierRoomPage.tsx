@@ -371,16 +371,27 @@ function ShortCard({
                 </button>
               </div>
 
-              {/* Delay slider + target channels */}
-              <div className="flex items-end gap-8">
-                <div className="flex-1">
-                  <div className="flex justify-between items-center mb-1.5">
-                    <span className="text-xs text-[#777]">Delay between uploads</span>
-                    <span className="text-sm font-bold text-white">{gapMinutes === 0 ? "No delay" : `${gapMinutes} min`}</span>
-                  </div>
-                  <SliderTrack value={gapMinutes} min={0} max={120} step={5} onChange={setGapMinutes}
-                    labels={["0", "30", "60", "90", "120"]} />
+              {/* Channel count slider */}
+              <div>
+                <div className="flex justify-between items-center mb-1.5">
+                  <span className="text-xs text-[#777]">Number of channels</span>
+                  <span className="text-sm font-bold text-white">{nChannels === 0 ? `All (${targetChannels.length})` : nChannels}</span>
                 </div>
+                <SliderTrack value={nChannels} min={0} max={Math.max(targetChannels.length, 30)} onChange={setNChannels}
+                  labels={["All", "5", "10", "15", "20", "25", "30"]} />
+                <p className="text-[10px] text-[#444] mt-1">
+                  {nChannels === 0 ? "Will upload to all connected target channels" : `Will upload to ${nChannels} channels`}
+                </p>
+              </div>
+
+              {/* Delay slider */}
+              <div>
+                <div className="flex justify-between items-center mb-1.5">
+                  <span className="text-xs text-[#777]">Delay between uploads</span>
+                  <span className="text-sm font-bold text-white">{gapMinutes === 0 ? "No delay" : `${gapMinutes} min`}</span>
+                </div>
+                <SliderTrack value={gapMinutes} min={0} max={120} step={5} onChange={setGapMinutes}
+                  labels={["0", "30", "60", "90", "120"]} />
               </div>
 
               {/* Upload progress — shows which video is being multiplied */}
@@ -457,7 +468,7 @@ function ShortCard({
                 {multiplying ? (
                   <><Loader2 className="w-4 h-4 animate-spin" /> Multiplying — uploading to YouTube...</>
                 ) : (
-                  <>Multiply to all {nChannels || "target"} channels{gapMinutes > 0 ? ` (${gapMinutes}min gap)` : ""}</>
+                  <>Multiply to {nChannels === 0 ? `all ${targetChannels.length}` : nChannels} channels{gapMinutes > 0 ? ` (${gapMinutes}min gap)` : ""}</>
                 )}
               </button>
             </div>
