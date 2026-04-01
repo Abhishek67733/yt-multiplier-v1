@@ -1615,7 +1615,6 @@ export default function MultiplierRoomPage() {
             setMultiplyingFor(null);
             setMultiplyResultFor((prev) => ({ ...prev, [videoId]: st.last_result }));
             if (st.last_result) success(`Done: ${st.last_result.total_sent} sent, ${st.last_result.total_errors} errors`);
-            await fetchAll();
           }
         } catch { setMultiplyingFor(null); }
       };
