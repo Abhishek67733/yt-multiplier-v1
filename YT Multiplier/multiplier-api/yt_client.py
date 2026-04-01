@@ -11,6 +11,7 @@ from typing import Optional
 
 YT_DLP_BASE = os.getenv("YT_DLP_API_BASE_URL", "https://yt-dlp-api-production-d650.up.railway.app")
 TIMEOUT = 120
+COOKIES_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
 
 
 # ── Direct yt-dlp helpers ────────────────────────────────────────────────────
@@ -233,8 +234,12 @@ def download_video_bytes(video_url: str, dest_path: str, oauth_token: str = None
                 pass
 
         try:
+            args = list(strategy["args"])
+            # Inject cookies file if available (authenticates to bypass bot detection)
+            if os.path.exists(COOKIES_FILE) and "android_vr" not in strategy.get("name", ""):
+                args = ["--cookies", COOKIES_FILE] + args
             print(f"[yt_client] Trying {strategy['name']}...")
-            _run_ytdlp(strategy["args"], timeout=300)
+            _run_ytdlp(args, timeout=300)
             if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000:
                 print(f"[yt_client] Success with {strategy['name']}: {os.path.getsize(dest_path)/1024:.0f}KB")
                 return dest_path
