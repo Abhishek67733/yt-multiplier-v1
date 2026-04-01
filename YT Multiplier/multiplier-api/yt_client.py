@@ -146,47 +146,64 @@ def download_video_bytes(video_url: str, dest_path: str, oauth_token: str = None
     Returns the path to the downloaded file.
     """
     strategies = [
-        # Strategy 1: android_vr client (no cookies needed)
+        # Strategy 1: web_creator client (best for avoiding bot detection)
+        {
+            "name": "yt-dlp web_creator",
+            "args": [
+                "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--merge-output-format", "mp4",
+                "--extractor-args", "youtube:player_client=web_creator",
+                "--no-check-certificates",
+                "-o", dest_path,
+                "--no-playlist",
+                video_url,
+            ],
+        },
+        # Strategy 2: android_vr client
         {
             "name": "yt-dlp android_vr",
             "args": [
                 "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                 "--merge-output-format", "mp4",
                 "--extractor-args", "youtube:player_client=android_vr",
+                "--no-check-certificates",
                 "-o", dest_path,
                 "--no-playlist",
                 video_url,
             ],
         },
-        # Strategy 2: tv_embedded client
+        # Strategy 3: tv_embedded client
         {
             "name": "yt-dlp tv_embedded",
             "args": [
                 "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                 "--merge-output-format", "mp4",
                 "--extractor-args", "youtube:player_client=tv_embedded",
+                "--no-check-certificates",
                 "-o", dest_path,
                 "--no-playlist",
                 video_url,
             ],
         },
-        # Strategy 3: mweb client
+        # Strategy 4: mweb client
         {
             "name": "yt-dlp mweb",
             "args": [
                 "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                 "--merge-output-format", "mp4",
                 "--extractor-args", "youtube:player_client=mweb",
+                "--no-check-certificates",
                 "-o", dest_path,
                 "--no-playlist",
                 video_url,
             ],
         },
-        # Strategy 4: default (let yt-dlp decide)
+        # Strategy 5: default with no restrictions
         {
             "name": "yt-dlp default",
             "args": [
                 "-f", "best[ext=mp4]/best",
+                "--no-check-certificates",
                 "-o", dest_path,
                 "--no-playlist",
                 video_url,
