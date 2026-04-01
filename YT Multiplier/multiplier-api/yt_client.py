@@ -159,7 +159,20 @@ def download_video_bytes(video_url: str, dest_path: str, oauth_token: str = None
                 video_url,
             ],
         },
-        # Strategy 2: android_vr client
+        # Strategy 2: mediaconnect client (newer, often bypasses bot detection)
+        {
+            "name": "yt-dlp mediaconnect",
+            "args": [
+                "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--merge-output-format", "mp4",
+                "--extractor-args", "youtube:player_client=mediaconnect",
+                "--no-check-certificates",
+                "-o", dest_path,
+                "--no-playlist",
+                video_url,
+            ],
+        },
+        # Strategy 3: android_vr client
         {
             "name": "yt-dlp android_vr",
             "args": [
