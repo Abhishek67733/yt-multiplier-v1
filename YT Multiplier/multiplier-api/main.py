@@ -1192,11 +1192,22 @@ def _refresh_uploaded_video_stats():
     try:
         targets = supabase.table("target_channels").select("oauth_credentials").not_.is_("oauth_credentials", "null").limit(1).execute().data
         if targets and targets[0].get("oauth_credentials"):
-            creds_json = targets[0]["oauth_credentials"]
-            if isinstance(creds_json, dict):
-                creds_json = json.dumps(creds_json)
-            from youtube_upload import _build_youtube_client
-            youtube_client, _ = _build_youtube_client(creds_json)
+            creds_data = targets[0]["oauth_credentials"]
+            if isinstance(creds_data, str):
+                creds_data = json.loads(creds_data)
+            from google.oauth2.credentials import Credentials
+            from google.auth.transport.requests import Request
+            from googleapiclient.discovery import build as google_build
+            creds = Credentials(
+                token=creds_data.get("token"),
+                refresh_token=creds_data.get("refresh_token"),
+                token_uri=creds_data.get("token_uri", "https://oauth2.googleapis.com/token"),
+                client_id=creds_data.get("client_id"),
+                client_secret=creds_data.get("client_secret"),
+            )
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            youtube_client = google_build("youtube", "v3", credentials=creds)
             print("[stats-refresh] Built YouTube API client from OAuth credentials")
     except Exception as e:
         print(f"[stats-refresh] Could not build YouTube client: {e}")
