@@ -1184,18 +1184,75 @@ def n8n_upload_callback(body: N8nCallbackRequest):
 
 def _refresh_uploaded_video_stats():
     rows = supabase.table("webhook_logs").select("id, uploaded_video_id").not_.is_("uploaded_video_id", "null").eq("status", "sent").execute().data
-    for row in rows:
-        if not row["uploaded_video_id"]:
-            continue
-        try:
-            stats = get_video_stats(f"https://www.youtube.com/watch?v={row['uploaded_video_id']}")
-            supabase.table("webhook_logs").update({
-                "uploaded_views": stats.get("views", 0) or 0,
-                "uploaded_likes": stats.get("likes", 0) or 0,
-                "stats_updated_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", row["id"]).execute()
-        except Exception as e:
-            print(f"[stats-refresh] Failed for {row['uploaded_video_id']}: {e}")
+    if not rows:
+        return
+
+    # Build a YouTube API client using OAuth from the first available target channel
+    youtube_client = None
+    try:
+        targets = supabase.table("target_channels").select("oauth_credentials").not_.is_("oauth_credentials", "null").limit(1).execute().data
+        if targets and targets[0].get("oauth_credentials"):
+            creds_json = targets[0]["oauth_credentials"]
+            if isinstance(creds_json, dict):
+                creds_json = json.dumps(creds_json)
+            from youtube_upload import _build_youtube_client
+            youtube_client, _ = _build_youtube_client(creds_json)
+            print("[stats-refresh] Built YouTube API client from OAuth credentials")
+    except Exception as e:
+        print(f"[stats-refresh] Could not build YouTube client: {e}")
+
+    # Collect all video IDs and map to row IDs
+    id_to_rows = {}
+    for r in rows:
+        vid = r.get("uploaded_video_id")
+        if vid:
+            id_to_rows.setdefault(vid, []).append(r["id"])
+
+    video_ids = list(id_to_rows.keys())
+    stats_map = {}
+
+    # Batch fetch stats via YouTube Data API (50 per request)
+    if youtube_client:
+        for i in range(0, len(video_ids), 50):
+            chunk = video_ids[i:i+50]
+            try:
+                response = youtube_client.videos().list(part="statistics", id=",".join(chunk)).execute()
+                for item in response.get("items", []):
+                    s = item.get("statistics", {})
+                    stats_map[item["id"]] = {
+                        "views": int(s.get("viewCount", 0)),
+                        "likes": int(s.get("likeCount", 0)),
+                    }
+                print(f"[stats-refresh] YouTube API batch {i//50+1}: got stats for {len(response.get('items', []))} videos")
+            except Exception as e:
+                print(f"[stats-refresh] YouTube API batch failed: {e}")
+    else:
+        # Fallback: use yt-dlp per video
+        print("[stats-refresh] No YouTube client, falling back to yt-dlp")
+        for vid_id in video_ids:
+            try:
+                s = get_video_stats(f"https://www.youtube.com/watch?v={vid_id}")
+                if s.get("views", 0) > 0:
+                    stats_map[vid_id] = {"views": s["views"], "likes": s.get("likes", 0)}
+            except Exception:
+                pass
+
+    # Update DB
+    now = datetime.now(timezone.utc).isoformat()
+    updated = 0
+    for vid_id, stats in stats_map.items():
+        for row_id in id_to_rows.get(vid_id, []):
+            try:
+                supabase.table("webhook_logs").update({
+                    "uploaded_views": stats["views"],
+                    "uploaded_likes": stats["likes"],
+                    "stats_updated_at": now,
+                }).eq("id", row_id).execute()
+                updated += 1
+            except Exception as e:
+                print(f"[stats-refresh] DB update failed for row {row_id}: {e}")
+
+    print(f"[stats-refresh] Done: {len(stats_map)} unique videos, {updated} rows updated")
 
 
 @app.post("/upload/refresh-stats")
