@@ -11,4 +11,4 @@ APScheduler>=3.10.4
 python-dotenv>=1.0.1
 supabase>=2.0.0
 yt-dlp>=2026.3.17
-pytubefix>=6.0.0
+pytubefix>=8.0.0

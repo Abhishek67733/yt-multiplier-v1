@@ -164,25 +164,7 @@ def download_video_bytes(video_url: str, dest_path: str, oauth_token: str = None
     """
     strategies = []
 
-    # Strategy 0: OAuth2 authenticated download (permanent fix, no cookies needed)
-    if oauth_creds and oauth_creds.get("refresh_token"):
-        try:
-            fresh_token = _get_fresh_oauth_token(oauth_creds)
-            print(f"[yt_client] Got fresh OAuth token for download")
-            strategies.append({
-                "name": "yt-dlp oauth2",
-                "args": [
-                    "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                    "--merge-output-format", "mp4",
-                    "--extractor-args", f"youtube:oauth2_access_token={fresh_token}",
-                    "--no-check-certificates",
-                    "-o", dest_path,
-                    "--no-playlist",
-                    video_url,
-                ],
-            })
-        except Exception as e:
-            print(f"[yt_client] OAuth token refresh failed: {e}")
+    # Note: OAuth-based download is handled by pytubefix below (after yt-dlp strategies)
 
     strategies += [
         # Strategy 1: web_creator client (best for avoiding bot detection)
@@ -306,10 +288,30 @@ def download_video_bytes(video_url: str, dest_path: str, oauth_token: str = None
         except Exception as e:
             print(f"[yt_client] External API fallback also failed: {e}")
 
-    # Last resort: try pytubefix if available
+    # Try pytubefix with OAuth token (most reliable for bot bypass)
+    if oauth_creds and oauth_creds.get("refresh_token"):
+        try:
+            from pytubefix import YouTube as PyTube
+            fresh_token = _get_fresh_oauth_token(oauth_creds)
+            print(f"[yt_client] Trying pytubefix with OAuth token...")
+            yt = PyTube(video_url, use_oauth=False, allow_oauth_cache=False, token_type="bearer", access_token=fresh_token)
+            stream = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc().first()
+            if not stream:
+                stream = yt.streams.filter(file_extension="mp4").first()
+            if stream:
+                if os.path.exists(dest_path):
+                    os.unlink(dest_path)
+                stream.download(filename=dest_path)
+                if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000:
+                    print(f"[yt_client] pytubefix OAuth success: {os.path.getsize(dest_path)/1024:.0f}KB")
+                    return dest_path
+        except Exception as e:
+            print(f"[yt_client] pytubefix OAuth failed: {e}")
+
+    # Last resort: try pytubefix without OAuth
     try:
         from pytubefix import YouTube as PyTube
-        print(f"[yt_client] Trying pytubefix...")
+        print(f"[yt_client] Trying pytubefix (no OAuth)...")
         yt = PyTube(video_url, use_oauth=False, allow_oauth_cache=False)
         stream = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc().first()
         if not stream:
@@ -321,7 +323,7 @@ def download_video_bytes(video_url: str, dest_path: str, oauth_token: str = None
             if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000:
                 return dest_path
     except Exception as e:
-        print(f"[yt_client] pytubefix failed: {e}")
+        print(f"[yt_client] pytubefix no-oauth failed: {e}")
 
     raise RuntimeError(f"All download methods failed for {video_url}")
 
