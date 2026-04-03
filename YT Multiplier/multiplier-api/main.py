@@ -996,11 +996,12 @@ def _run_direct_upload(video_ids, video_target_map, do_process, user_id, gap_min
             cleanup_files.append(tmp_path)
             video_url = short.get("url") or f"https://www.youtube.com/shorts/{vid_id}"
             print(f"[multiply] Downloading {vid_id} from {video_url}...")
-            # Get OAuth token from first target channel to authenticate download
+            # Get OAuth credentials from first target channel for authenticated download
             first_target = video_target_map.get(vid_id, [{}])[0]
             oauth_creds = first_target.get("oauth_credentials") or {}
-            oauth_token = oauth_creds.get("token") if isinstance(oauth_creds, dict) else None
-            download_video_bytes(video_url, tmp_path, oauth_token=oauth_token)
+            if isinstance(oauth_creds, str):
+                oauth_creds = json.loads(oauth_creds)
+            download_video_bytes(video_url, tmp_path, oauth_creds=oauth_creds)
             file_size = os.path.getsize(tmp_path)
             print(f"[multiply] Downloaded {vid_id}: {file_size/1024:.0f}KB")
             if file_size < 1000:

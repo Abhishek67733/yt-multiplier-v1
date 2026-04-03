@@ -14,6 +14,22 @@ TIMEOUT = 120
 COOKIES_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
 
 
+def _get_fresh_oauth_token(oauth_creds: dict) -> str:
+    """Refresh OAuth credentials and return a fresh access_token."""
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+
+    creds = Credentials(
+        token=oauth_creds.get("token"),
+        refresh_token=oauth_creds.get("refresh_token"),
+        token_uri=oauth_creds.get("token_uri", "https://oauth2.googleapis.com/token"),
+        client_id=oauth_creds.get("client_id"),
+        client_secret=oauth_creds.get("client_secret"),
+    )
+    creds.refresh(Request())
+    return creds.token
+
+
 # ── Direct yt-dlp helpers ────────────────────────────────────────────────────
 
 def _run_ytdlp(args: list[str], timeout: int = 120) -> str:
@@ -137,16 +153,38 @@ def get_video_stats(video_url: str) -> dict:
         return {"views": 0, "likes": 0, "comments": 0}
 
 
-def download_video_bytes(video_url: str, dest_path: str, oauth_token: str = None) -> str:
+def download_video_bytes(video_url: str, dest_path: str, oauth_token: str = None, oauth_creds: dict = None) -> str:
     """
     Download a video file. Tries multiple strategies:
-    1. yt-dlp with android_vr client (bypasses bot check)
-    2. yt-dlp with OAuth token authentication
-    3. yt-dlp with tv_embedded client
-    4. External API /direct-url fallback
+    0. OAuth2 authenticated download (most reliable, auto-refreshing)
+    1. yt-dlp with web_creator client
+    2. yt-dlp with various client fallbacks
+    3. External API /direct-url fallback
     Returns the path to the downloaded file.
     """
-    strategies = [
+    strategies = []
+
+    # Strategy 0: OAuth2 authenticated download (permanent fix, no cookies needed)
+    if oauth_creds and oauth_creds.get("refresh_token"):
+        try:
+            fresh_token = _get_fresh_oauth_token(oauth_creds)
+            print(f"[yt_client] Got fresh OAuth token for download")
+            strategies.append({
+                "name": "yt-dlp oauth2",
+                "args": [
+                    "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                    "--merge-output-format", "mp4",
+                    "--extractor-args", f"youtube:oauth2_access_token={fresh_token}",
+                    "--no-check-certificates",
+                    "-o", dest_path,
+                    "--no-playlist",
+                    video_url,
+                ],
+            })
+        except Exception as e:
+            print(f"[yt_client] OAuth token refresh failed: {e}")
+
+    strategies += [
         # Strategy 1: web_creator client (best for avoiding bot detection)
         {
             "name": "yt-dlp web_creator",
