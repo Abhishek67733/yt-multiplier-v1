@@ -82,10 +82,12 @@ def _ensure_default_user() -> str:
 def get_user_id(x_user_id: str = Header(None)) -> str:
     """Get user_id from x-user-id header, or fall back to default user."""
     if x_user_id:
-        # Validate it exists
-        existing = supabase.table("users").select("id").eq("id", x_user_id).execute().data
-        if existing:
-            return existing[0]["id"]
+        # Only query if it looks like a valid UUID
+        import re
+        if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', x_user_id, re.IGNORECASE):
+            existing = supabase.table("users").select("id").eq("id", x_user_id).execute().data
+            if existing:
+                return existing[0]["id"]
     return _ensure_default_user()
 
 
